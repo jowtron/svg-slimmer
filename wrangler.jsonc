@@ -1,0 +1,8 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "svg-slimmer",
+  "compatibility_date": "2026-09-28",
+  // Static page only: no Worker script, just the built assets.
+  "assets": { "directory": "./dist" },
+  "routes": [{ "pattern": "svg-slimmer.jderrick.app", "custom_domain": true }]
+}

@@ -1,0 +1,7 @@
+dist/
+node_modules/
+.wrangler/
+.DS_Store
+# Private working notes and client samples
+NOTES.md
+samples/

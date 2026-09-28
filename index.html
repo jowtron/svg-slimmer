@@ -1,0 +1,1219 @@
+<title>SVG Slimmer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --ground:#F2F4F7; --panel:#FFFFFF; --ink:#141A22; --muted:#566170; --line:#D5DBE3; --mat:#E7EBF0; --paper:#FFFFFF; --grid:rgba(43,89,195,.07);
+    --accent:#2B59C3; --accent-ink:#FFFFFF; --accent-soft:#E5ECFB;
+    --good:#2E7D4F; --warn:#9A6200; --bad:#C8412F;
+    --shadow:0 1px 2px rgba(20,26,34,.06),0 8px 24px -12px rgba(20,26,34,.18);
+    --ui:"Familjen Grotesk","Helvetica Neue",Helvetica,Arial,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme:dark;
+      --ground:#0F1318; --panel:#171D24; --ink:#E6EBF1; --muted:#95A1B0; --line:#2A333E; --mat:#1D242C; --grid:rgba(134,168,255,.07);
+      --accent:#86A8FF; --accent-ink:#0B1530; --accent-soft:#1E2A45;
+      --good:#6BCB8F; --warn:#E8B04A; --bad:#FF8A75;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+    --ground:#0F1318; --panel:#171D24; --ink:#E6EBF1; --muted:#95A1B0; --line:#2A333E; --mat:#1D242C; --grid:rgba(134,168,255,.07);
+    --accent:#86A8FF; --accent-ink:#0B1530; --accent-soft:#1E2A45;
+    --good:#6BCB8F; --warn:#E8B04A; --bad:#FF8A75;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  [hidden]{display:none!important}
+  body{background:var(--ground);color:var(--ink);font-family:var(--ui);font-size:15px;line-height:1.5;padding-inline:16px;padding-block:24px 40px}
+  .shell{max-width:1180px;margin:0 auto;display:grid;gap:20px}
+  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px}
+  h1{font-size:1.6rem;font-weight:600;letter-spacing:-.01em;margin:0}
+  header p{margin:0;color:var(--muted);max-width:62ch;text-wrap:pretty}
+
+  .layout{display:grid;grid-template-columns:300px minmax(0,1fr);gap:20px;align-items:start}
+  @media (max-width:860px){.layout{grid-template-columns:minmax(0,1fr)}}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+  .controls{padding:16px;display:grid;gap:18px}
+  .field{display:grid;gap:6px}
+  .field-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .field label,.field .label{font-weight:600}
+  .field .val{font-family:var(--mono);font-size:.82rem;color:var(--ink);font-variant-numeric:tabular-nums}
+  .hint{margin:0;color:var(--muted);font-size:.84rem;line-height:1.4}
+  .term{font-family:var(--mono);font-size:.72rem;color:var(--muted);letter-spacing:.02em}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{font:500 .85rem var(--mono);padding:7px 4px;border:0;background:var(--panel);color:var(--ink);cursor:pointer;font-variant-numeric:tabular-nums}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+  .seg button:focus-visible,.btn:focus-visible,.drop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  .drop{display:grid;gap:4px;justify-items:center;text-align:center;padding:16px 12px;border:1.5px dashed var(--line);border-radius:8px;cursor:pointer;background:var(--mat)}
+  .drop strong{font-weight:600}
+  .drop.over{border-color:var(--accent);background:var(--accent-soft)}
+  .file-name{font-family:var(--mono);font-size:.8rem;color:var(--muted);word-break:break-all}
+
+  .btn{font:600 .92rem var(--ui);padding:9px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .png select:disabled{opacity:.45}
+  .auto{display:grid;gap:8px;padding-top:14px;border-top:1px solid var(--line)}
+  .auto-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:.86rem}
+  .auto-row input{width:4.2em;font:500 .85rem var(--mono);padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+
+  .results{display:grid;gap:14px;min-width:0}
+  .summary{padding:14px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px}
+  .big{font-family:var(--mono);font-size:1.25rem;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .big .arrow{color:var(--muted);padding-inline:.25em}
+  .saving{font-weight:600}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:.84rem;font-weight:600;padding:3px 10px;border-radius:999px;border:1px solid currentColor}
+  .pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+  .pill.good{color:var(--good)} .pill.warn{color:var(--warn)} .pill.bad{color:var(--bad)}
+  .summary .actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .status{min-height:1.4em;color:var(--muted);font-size:.86rem;margin:0;flex:1 1 240px}
+  .runbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+  .check.small{font-weight:500;font-size:.88rem;color:var(--muted)}
+  .png{display:inline-flex;gap:6px;align-items:center}
+  .png select{font:500 .85rem var(--mono);padding:8px 6px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+  .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+  .views{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  @media (max-width:620px){.views{grid-template-columns:minmax(0,1fr)}}
+  .view{display:grid;grid-template-rows:auto 1fr auto;overflow:hidden}
+  .view-head{min-height:46px;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line)}
+  .view-head h2{font-size:.78rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;margin:0;color:var(--muted)}
+  .view-head .seg button{padding:4px 10px;font-size:.76rem}
+  .stage{aspect-ratio:1/1;overflow:auto;background-color:var(--paper);
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:16px 16px;}
+  .stage img{display:block;width:calc(var(--zoom,1) * 100%);max-width:none;height:auto;image-rendering:auto}
+  .stage img.pix{image-rendering:pixelated}
+  .stage img:not([src]){display:none}
+  .view-foot{display:flex;flex-wrap:wrap;gap:4px 16px;padding:8px 12px;border-top:1px solid var(--line);font-family:var(--mono);font-size:.78rem;color:var(--muted);font-variant-numeric:tabular-nums}
+  .view-foot b{color:var(--ink);font-weight:500}
+
+  .zoom{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:.86rem}
+  .zoom input{flex:1 1 180px;max-width:320px}
+  .legend{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:10px;height:10px;border-radius:2px;background:var(--bad);display:inline-block}
+
+  details.code{padding:0}
+  details.code summary{cursor:pointer;padding:10px 14px;font-weight:600}
+  details.code textarea{display:block;width:100%;box-sizing:border-box;min-height:140px;border:0;border-top:1px solid var(--line);padding:12px 14px;font:.78rem/1.5 var(--mono);background:var(--mat);color:var(--ink);resize:vertical;border-radius:0 0 10px 10px}
+
+  footer{color:var(--muted);font-size:.82rem;max-width:80ch}
+  footer p{margin:.3em 0}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  .swatches{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:4px 6px}
+  .swatches li{display:flex}
+  .sw{flex:1;display:flex;align-items:center;gap:7px;font:.76rem var(--mono);color:var(--ink);background:none;border:1px solid transparent;border-radius:6px;padding:3px 5px;cursor:pointer;text-align:left}
+  .sw:hover{border-color:var(--line)}
+  .sw .pct{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums;text-decoration:none}
+  .sw:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .sw i{width:18px;height:18px;border-radius:4px;border:1px solid var(--line);flex:none;position:relative}
+  .sw.pin{border-color:var(--accent)}
+  .sw.pin i::after{content:"";position:absolute;right:-4px;top:-4px;width:8px;height:8px;border-radius:50%;background:var(--accent);border:1.5px solid var(--panel)}
+  .sw.merged,.sw.removed{color:var(--muted)}
+  .sw.merged i,.sw.removed i{opacity:.35}
+  .sw.removed{text-decoration:line-through}
+  .linkish{font:inherit;color:var(--accent);background:none;border:0;padding:0;cursor:pointer;text-decoration:underline}
+  .check{display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer}
+  .check input{width:16px;height:16px;accent-color:var(--accent)}
+</style>
+
+<div class="shell">
+  <header>
+    <h1>SVG Slimmer</h1>
+    <p>Traces a logo or icon, SVG or bitmap, as smooth curves, colour by colour, then checks the result against the original pixel by pixel so you can see what, if anything, was lost.</p>
+  </header>
+
+  <div class="layout">
+    <aside class="panel controls" aria-label="Settings">
+      <div class="field">
+        <div class="drop" id="drop" tabindex="0" role="button" aria-describedby="fileName">
+          <strong>Open an SVG or PNG</strong>
+          <span class="hint">or drop it here, or paste SVG code</span>
+          <input id="fileInput" type="file" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" hidden>
+        </div>
+        <div class="file-name" id="fileName"></div>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="label" id="presetLabel">Quality</span><span class="term" id="presetNote"></span></div>
+        <div class="seg" role="group" aria-labelledby="presetLabel" id="presetSeg">
+          <button type="button" data-v="small">Smallest</button>
+          <button type="button" data-v="balanced">Balanced</button>
+          <button type="button" data-v="fine">Finest</button>
+        </div>
+        <p class="hint">Sets detail, smoothing and small-shape protection together. Adjust any of them below.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="label" id="modeLabel">Colours</span></div>
+        <div class="seg" role="group" aria-labelledby="modeLabel" id="colourSeg">
+          <button type="button" data-v="colour" aria-pressed="true">Keep colours</button>
+          <button type="button" data-v="mono">One colour</button>
+        </div>
+      </div>
+
+      <div class="field colour-only">
+        <div class="field-head"><span class="label">Palette</span><span class="val" id="palCount"></span></div>
+        <ul class="swatches" id="swatches" aria-label="Colours, bottom layer first"></ul>
+        <p class="hint">Percentages are each colour's share of the artwork, background left out. Click a colour once to lock it in, so it stays however far you reduce <em>Most colours</em>. Click again to leave it out, and its pixels go to the nearest colour left; a third click hands it back. Faded colours were merged away: click one to bring it back, locked. <button type="button" class="linkish" id="palReset" hidden>Reset colours</button></p>
+        <p class="hint">Traced as stacked layers, bottom first. Each layer runs under the ones above it, so no gaps open between colours.</p>
+      </div>
+
+      <div class="field colour-only">
+        <div class="field-head"><label for="maxCol">Most colours</label><span class="val" id="maxColV">24</span></div>
+        <input id="maxCol" type="range" min="2" max="24" step="1" value="24">
+        <p class="hint">For photos, gradients and AI images. The closest colours merge until this many are left; small distinct ones, like an eye, are kept.</p>
+      </div>
+
+      <div class="field colour-only">
+        <div class="field-head"><label for="merge">Merge similar colours</label><span class="val" id="mergeV">16</span></div>
+        <input id="merge" type="range" min="0" max="80" step="2" value="16">
+        <p class="hint">Colours closer than this are traced as one. Fewer colours make a smaller file.</p>
+      </div>
+
+      <div class="field colour-only">
+        <label class="check"><input id="edgeBg" type="checkbox"> Remove the background</label>
+        <p class="hint">Leaves out the colour around the artwork, such as a PNG's white background. The same colour inside the artwork, like white in an eye, is kept.</p>
+      </div>
+
+      <div class="field colour-only">
+        <label class="check"><input id="edges" type="checkbox" checked> Fix blended edges</label>
+        <p class="hint">Where two colours meet, the soft pixels between them only take one of those two colours. Stops a fringe of a third colour, like pale grey along a dark edge.</p>
+      </div>
+
+      <div class="field colour-only">
+        <div class="field-head"><label for="clean">Clean up edges</label><span class="val" id="cleanV">0</span></div>
+        <input id="clean" type="range" min="0" max="3" step="1" value="0">
+        <p class="hint">Smooths out speckle and ragged edges from noisy or upscaled images before tracing.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="label" id="gridLabel">Detail</span><span class="term">trace grid</span></div>
+        <div class="seg" role="group" aria-labelledby="gridLabel" id="gridSeg">
+          <button type="button" data-v="1024">1024</button>
+          <button type="button" data-v="2048" aria-pressed="true">2048</button>
+          <button type="button" data-v="4096">4096</button>
+        </div>
+        <p class="hint">Pixels along the long side. Higher keeps finer detail and makes a bigger file.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="tol">Smoothing</label><span class="val" id="tolV">0.5</span></div>
+        <input id="tol" type="range" min="0.1" max="1.5" step="0.1" value="0.5">
+        <p class="hint">How far a curve may drift to merge into fewer, longer ones. <span class="term">opttolerance</span></p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="protect">Protect small shapes</label><span class="val" id="protectV">6%</span></div>
+        <input id="protect" type="range" min="0" max="25" step="1" value="6">
+        <p class="hint">Shapes smaller than this share of the image, such as eyes, letters and thin lines, are traced with almost no smoothing. Big curves still get the full amount.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="alpha">Corners</label><span class="val" id="alphaV">1.0</span></div>
+        <input id="alpha" type="range" min="0.5" max="1.3" step="0.1" value="1.0">
+        <p class="hint">Lower keeps sharp corners, higher rounds them off. <span class="term">alphamax</span></p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="turd">Remove specks</label><span class="val" id="turdV">16 px</span></div>
+        <input id="turd" type="range" min="0" max="100" step="2" value="16">
+        <p class="hint">Any patch of colour smaller than this takes the colour around it, in the PNG and the trace. Measured at 2048 px across and scaled to the size you export.</p>
+      </div>
+
+      <div class="field mono-only" hidden>
+        <div class="field-head"><label for="thr">Threshold</label><span class="val" id="thrV">128</span></div>
+        <input id="thr" type="range" min="1" max="254" step="1" value="128">
+        <p class="hint">Anything darker than this becomes the shape.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><span class="label" id="decLabel">Decimal places</span></div>
+        <div class="seg" role="group" aria-labelledby="decLabel" id="decSeg">
+          <button type="button" data-v="0" aria-pressed="true">0</button>
+          <button type="button" data-v="1">1</button>
+        </div>
+      </div>
+
+      <div class="auto">
+        <button class="btn primary" type="button" id="autoBtn">Find smallest</button>
+        <div class="auto-row">
+          <label for="target">that differs by at most</label>
+          <input id="target" type="number" min="0.01" max="5" step="0.05" value="0.2"><span>%</span>
+        </div>
+        <p class="hint">Tries each detail and smoothing setting and keeps the smallest file that stays this close to the original.</p>
+      </div>
+    </aside>
+
+    <section class="results" aria-label="Result">
+      <div class="panel summary">
+        <div class="big" id="sizes">…</div>
+        <div class="saving" id="saving"></div>
+        <span class="pill" id="pill" hidden></span>
+        <div class="actions">
+          <button class="btn" type="button" id="copyBtn">Copy SVG</button>
+          <button class="btn primary" type="button" id="dlBtn" hidden>Download SVG</button>
+          <span class="png" id="pngGroup" hidden>
+            <label class="visually-hidden" for="pngSize">Quantized PNG size</label>
+            <select id="pngSize" title="Size of the quantized PNG, pixels along the long side">
+              <option value="orig">Original size</option><option value="512">512 px</option><option value="1024">1024 px</option><option value="2048" selected>2048 px</option><option value="4096">4096 px</option>
+            </select>
+            <button class="btn" type="button" id="pngBtn" title="The original image reduced to the palette colours, saved as an indexed PNG">Download quantized PNG</button>
+          </span>
+        </div>
+      </div>
+      <div class="runbar">
+        <p class="status" id="status" aria-live="polite"></p>
+        <label class="check small"><input id="autoRun" type="checkbox" checked> Update automatically</label>
+        <button class="btn" type="button" id="traceBtn" hidden>Trace</button>
+      </div>
+
+      <div class="views">
+        <div class="panel view">
+          <div class="view-head">
+            <h2>Original</h2>
+            <div class="seg" role="group" aria-label="Show" id="origSeg">
+              <button type="button" data-v="orig" aria-pressed="true">Original</button>
+              <button type="button" data-v="quant">Quantized</button>
+            </div>
+          </div>
+          <div class="stage" id="stageA"><img id="imgA" alt="The original artwork"></div>
+          <div class="view-foot" id="footA"></div>
+        </div>
+        <div class="panel view">
+          <div class="view-head">
+            <h2>Slimmed</h2>
+            <div class="seg" role="group" aria-label="Show" id="modeSeg">
+              <button type="button" data-v="result" aria-pressed="true">Result</button>
+              <button type="button" data-v="diff">Difference</button>
+            </div>
+          </div>
+          <div class="stage" id="stageB"><img id="imgB" alt="The slimmed artwork"></div>
+          <div class="view-foot" id="footB"></div>
+        </div>
+      </div>
+
+      <div class="zoom">
+        <label for="zoom">Zoom</label>
+        <input id="zoom" type="range" min="1" max="8" step="0.5" value="1">
+        <span class="val" id="zoomV">1×</span>
+        <span class="legend" id="legend" hidden><i></i> pixels that changed by more than a hairline</span>
+      </div>
+
+      <details class="panel code">
+        <summary>SVG code</summary>
+        <textarea id="code" readonly spellcheck="false" aria-label="SVG code"></textarea>
+      </details>
+    </section>
+  </div>
+
+  <footer>
+    <p>Works on SVGs and on bitmap images (PNG, JPEG, WebP), and best on flat artwork: logos, icons and illustrations with a handful of solid colours. Gradients and soft shadows are reduced to the nearest solid colour, and text is traced as shapes. Differences are measured at 2048 pixels on the long side, and an edge that moved by less than one pixel there doesn't count.</p>
+    <p>Tracing by Potrace (Peter Selinger), in the JavaScript port by kilobtye.</p>
+  </footer>
+</div>
+
+
+
+<script>window.module = window.module || { exports: {} };</script>
+<script src="https://cdn.jsdelivr.net/npm/potrace-browser@0.0.1/potrace.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const PotraceFactory = window.Potrace || (window.module && window.module.exports);
+  const CMP = 2048; // resolution the original and the result are compared at
+
+  const state = {
+    source: null,          // {kind:'svg', text} | {kind:'raster', blob}
+    name: 'logo',
+    origBytes: 0,
+    origPoints: null,
+    mode: 'colour',        // 'colour' | 'mono'
+    grid: 2048, tol: 0.5, alpha: 1.0, turd: 16, thr: 128, dec: 0, merge: 16, edgeBg: false,
+    protect: 6, maxCol: 24, clean: 0, edges: true,
+    choices: { keep: [], drop: [] }, // colours the viewer locked in or left out
+    result: null,          // {svg, bytes, points, layers, diffPct, diffUrl, opts}
+    view: 'result',
+    run: 0,
+    urls: [],
+    cache: {},             // rasters and palettes keyed by their inputs
+  };
+
+  // ---------- helpers ----------
+  const fmtBytes = (n) => n < 1000 ? `${n} B` : n < 1e6 ? `${(n / 1000).toFixed(n < 10000 ? 2 : 1)} KB` : `${(n / 1e6).toFixed(1)} MB`;
+  const tick = () => new Promise((r) => setTimeout(r, 16));
+  const status = (t) => { $('status').textContent = t; };
+  const hex2 = (v) => v.toString(16).padStart(2, '0');
+  const toHex = (c) => `#${hex2(c[0])}${hex2(c[1])}${hex2(c[2])}`;
+  const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+  function blobUrl(blob) { const u = URL.createObjectURL(blob); state.urls.push(u); return u; }
+  function loadImage(url) {
+    return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("That image couldn't be read.")); i.src = url; });
+  }
+  function countPoints(svgText) {
+    let n = 0;
+    for (const m of svgText.matchAll(/\sd="([^"]*)"/g)) n += (m[1].match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || []).length;
+    return Math.round(n / 2);
+  }
+  // Colours an SVG declares, normalised to [r,g,b] by the browser's own colour parser.
+  const probe = document.createElement('canvas').getContext('2d');
+  function declaredColours(svgText) {
+    const out = [];
+    for (const m of svgText.matchAll(/(?:fill|stroke|stop-color)(?:="|\s*:\s*)([^";)]+\)?)/gi)) {
+      const v = m[1].trim();
+      if (/^(none|transparent|currentColor|inherit)$/i.test(v) || /^url\(/i.test(v)) continue;
+      probe.fillStyle = '#010203'; probe.fillStyle = v;
+      const h = probe.fillStyle;
+      if (/^#[0-9a-f]{6}$/i.test(h) && !(h === '#010203' && v.toLowerCase() !== '#010203')) {
+        const c = [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+        if (!out.some((o) => dist2(o, c) === 0)) out.push(c);
+      }
+    }
+    return out;
+  }
+
+  // Give an SVG explicit pixel dimensions so it rasterises at the size we ask for.
+  function sizedSvg(text, N) {
+    const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+    const svg = doc.documentElement;
+    if (!svg || svg.nodeName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) throw new Error("That file isn't a readable SVG.");
+    let vb = (svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+    if (vb.length !== 4 || vb.some(isNaN) || vb[2] <= 0 || vb[3] <= 0) {
+      const dim = (a, d) => { const v = svg.getAttribute(a) || ''; return /%$/.test(v) ? d : (parseFloat(v) || d); };
+      vb = [0, 0, dim('width', 300), dim('height', 150)];
+      svg.setAttribute('viewBox', vb.join(' '));
+    }
+    const s = N / Math.max(vb[2], vb[3]);
+    const w = Math.max(1, Math.round(vb[2] * s)), h = Math.max(1, Math.round(vb[3] * s));
+    svg.setAttribute('width', w); svg.setAttribute('height', h);
+    return { text: new XMLSerializer().serializeToString(doc), w, h };
+  }
+
+  // Draw a source at long side N. Transparent stays transparent unless onWhite.
+  async function raster(source, N, onWhite) {
+    let img, w, h;
+    if (source.kind === 'svg') {
+      const s = sizedSvg(source.text, N); w = s.w; h = s.h;
+      img = await loadImage(blobUrl(new Blob([s.text], { type: 'image/svg+xml' })));
+    } else {
+      img = state.cache.img || (state.cache.img = await loadImage(blobUrl(source.blob)));
+      const sc = N / Math.max(img.naturalWidth, img.naturalHeight);
+      w = Math.max(1, Math.round(img.naturalWidth * sc)); h = Math.max(1, Math.round(img.naturalHeight * sc));
+    }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (onWhite) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); }
+    ctx.drawImage(img, 0, 0, w, h);
+    return { w, h, data: ctx.getImageData(0, 0, w, h).data };
+  }
+  async function cachedRaster(source, N, onWhite) {
+    const k = `r${N}${onWhite ? 'w' : 't'}`;
+    if (!state.cache[k]) state.cache[k] = await raster(source, N, onWhite);
+    return state.cache[k];
+  }
+
+  // One-colour: dark pixels (over white) are the shape.
+  function monoIndex(r, thr) {
+    const d = r.data, idx = new Int16Array(r.w * r.h);
+    for (let i = 0, j = 0; i < d.length; i += 4, j++) idx[j] = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) < thr ? 0 : -1;
+    return idx;
+  }
+
+  // Find the palette from the pixels, then snap to the colours the SVG declares.
+  // `choices` holds the viewer's picks: colours to keep no matter what, and
+  // colours to leave out. Returns the palette plus what was merged or removed.
+  const SAME = 24 * 24; // how close a colour must be to count as one the viewer picked
+  function findPalette(r, merge, declared, maxCol, choices) {
+    const d = r.data, w = r.w, bins = new Map();
+    const flat = (i, k) => Math.abs(d[i] - d[k]) + Math.abs(d[i + 1] - d[k + 1]) + Math.abs(d[i + 2] - d[k + 2]) + Math.abs(d[i + 3] - d[k + 3]) < 12;
+    // Only solid areas count: a pixel matching its right and lower neighbours.
+    // Blended edge pixels between two colours never become colours of their own.
+    for (let y = 0; y < r.h - 1; y++) for (let x = 0; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] < 250 || !flat(i, i + 4) || !flat(i, i + w * 4)) continue;
+      const key = (d[i] >> 3) << 10 | (d[i + 1] >> 3) << 5 | (d[i + 2] >> 3);
+      let b = bins.get(key); if (!b) bins.set(key, b = [0, 0, 0, 0]);
+      b[0] += d[i]; b[1] += d[i + 1]; b[2] += d[i + 2]; b[3]++;
+    }
+    const snap = (c) => {
+      c = c.map(Math.round);
+      if (declared.length) {
+        const near = declared.reduce((a, b) => dist2(b, c) < dist2(a, c) ? b : a);
+        if (dist2(near, c) <= 30 * 30) c = near;
+      }
+      return c;
+    };
+    const all = [...bins.values()].map((b) => ({ c: [b[0] / b[3], b[1] / b[3], b[2] / b[3]], n: b[3] }));
+    // A fixed floor rather than a share of the image: a big background would
+    // otherwise push a small, distinct colour (an eye) under the bar.
+    const buckets = all.filter((b) => b.n >= 12).sort((a, b) => b.n - a.n);
+    const m2 = Math.max(merge * merge, 64);
+    const cand = [];
+    for (const b of buckets) {
+      const hit = cand.find((p) => dist2(p.c, b.c) <= m2);
+      if (hit) hit.n += b.n; else cand.push({ c: b.c.slice(), n: b.n });
+      if (cand.length >= 64) break;
+    }
+    const picked = (c, list) => list.find((q) => dist2(q, c) <= SAME);
+    const removed = [], pal = [];
+    for (const c of cand) {
+      const shown = snap(c.c);
+      if (picked(shown, choices.drop)) { const r0 = removed.find((q) => dist2(q.c, shown) <= SAME); if (r0) r0.n += c.n; else removed.push({ c: shown, n: c.n }); }
+      else { const keep = picked(shown, choices.keep); pal.push({ c: keep ? keep.slice() : c.c, n: c.n, pin: !!keep }); }
+    }
+    for (const k of choices.keep) if (!pal.some((p) => p.pin && dist2(p.c, k) === 0)) pal.push({ c: k.slice(), n: 1, pin: true });
+    // Fold y into x. A kept colour always wins and never moves.
+    const fold = (x, y) => {
+      const n = x.n + y.n;
+      if (y.pin && !x.pin) x.c = y.c.slice(); else if (!x.pin) x.c = x.c.map((v, k) => (v * x.n + y.c[k] * y.n) / n);
+      x.n = n; x.pin = x.pin || y.pin;
+    };
+    // Too many colours (a gradient, say): merge the closest pair until it fits.
+    // Small, distinct colours such as an eye survive because nothing is near them.
+    while (pal.length > maxCol) {
+      let bi = -1, bj = -1, best = Infinity;
+      for (let i = 0; i < pal.length; i++) for (let j = i + 1; j < pal.length; j++) {
+        if (pal[i].pin && pal[j].pin) continue;
+        const e = dist2(pal[i].c, pal[j].c) * Math.min(pal[i].n, pal[j].n);
+        if (e < best) { best = e; bi = i; bj = j; }
+      }
+      if (bi < 0) break;
+      fold(pal[bi], pal[bj]); pal.splice(bj, 1);
+    }
+    // A few rounds of k-means over the solid colours to settle each one on its cluster.
+    for (let it = 0; it < 4 && pal.length > 1; it++) {
+      const acc = pal.map(() => [0, 0, 0, 0]);
+      for (const b of all) {
+        let bi = 0, best = Infinity;
+        for (let i = 0; i < pal.length; i++) { const e = dist2(pal[i].c, b.c); if (e < best) { best = e; bi = i; } }
+        const t = acc[bi]; t[0] += b.c[0] * b.n; t[1] += b.c[1] * b.n; t[2] += b.c[2] * b.n; t[3] += b.n;
+      }
+      pal.forEach((p, i) => { const t = acc[i]; if (t[3]) { p.n = t[3]; if (!p.pin) p.c = [t[0] / t[3], t[1] / t[3], t[2] / t[3]]; } });
+    }
+    // k-means can walk two centres towards each other; fold any that ended up closer than the merge distance.
+    for (let again = true; again;) {
+      again = false;
+      for (let i = 0; i < pal.length && !again; i++) for (let j = i + 1; j < pal.length && !again; j++) {
+        if ((pal[i].pin && pal[j].pin) || dist2(pal[i].c, pal[j].c) > m2) continue;
+        fold(pal[i], pal[j]); pal.splice(j, 1); again = true;
+      }
+    }
+    const cols = pal.map((p) => p.pin ? p.c : snap(p.c));
+    // Candidates that no longer have a colour of their own were merged away.
+    const merged = [];
+    for (const c of cand) {
+      const shown = snap(c.c);
+      if (picked(shown, choices.drop) || cols.some((q) => dist2(q, shown) <= SAME)) continue;
+      const m0 = merged.find((q) => dist2(q.c, shown) <= SAME);
+      if (m0) m0.n += c.n; else merged.push({ c: shown, n: c.n });
+    }
+    return { cols, pinned: pal.map((p) => p.pin), merged, removed, cand: cand.map((c) => ({ c: snap(c.c), n: c.n })) };
+  }
+
+  // Map every pixel to its nearest palette colour. The background colour becomes
+  // -1 only where it reaches the border, so the same white inside the artwork stays.
+  function classify(r, pal, bg, edges) {
+    const d = r.data, w = r.w, n = r.w * r.h, idx = new Int16Array(n), memo = new Map();
+    for (let j = 0, i = 0; j < n; j++, i += 4) {
+      if (d[i + 3] < 128) { idx[j] = -1; continue; }
+      const key = d[i] << 16 | d[i + 1] << 8 | d[i + 2];
+      let k = memo.get(key);
+      if (k === undefined) {
+        let best = Infinity; k = 0;
+        for (let p = 0; p < pal.length; p++) {
+          const e = (pal[p][0] - d[i]) ** 2 + (pal[p][1] - d[i + 1]) ** 2 + (pal[p][2] - d[i + 2]) ** 2;
+          if (e < best) { best = e; k = p; }
+        }
+        memo.set(key, k);
+      }
+      idx[j] = k;
+    }
+    if (edges) snapEdges(r, pal, idx);
+    if (bg >= 0) {
+      const q = new Int32Array(n); let head = 0, tail = 0;
+      const push = (j) => { if (idx[j] === bg) { idx[j] = -1; q[tail++] = j; } };
+      for (let x = 0; x < w; x++) { push(x); push(n - w + x); }
+      for (let y = 0; y < r.h; y++) { push(y * w); push(y * w + w - 1); }
+      while (head < tail) {
+        const j = q[head++], x = j % w;
+        if (x > 0) push(j - 1); if (x < w - 1) push(j + 1);
+        if (j >= w) push(j - w); if (j < n - w) push(j + w);
+      }
+    }
+    return idx;
+  }
+
+  // A blended pixel on an edge between two colours can sit nearer a third palette
+  // colour (dark blue + white blends to something close to a pale grey), which
+  // leaves a one-pixel fringe of that colour along the edge. So each pixel that
+  // isn't solid looks outwards in eight directions for the nearest solid pixels,
+  // and may only take one of the colours it finds there.
+  function snapEdges(r, pal, idx) {
+    const d = r.data, w = r.w, h = r.h, n = w * h;
+    const R = Math.max(2, Math.round(2 * Math.max(w, h) / 2048));
+    const solid = new Uint8Array(n);
+    // Compare across a step that grows with the image: an upscaled soft edge
+    // changes too little from one pixel to the next to be noticed otherwise.
+    const st = Math.max(1, Math.round(Math.max(w, h) / 2048));
+    const near = (i, k) => Math.abs(d[i] - d[k]) + Math.abs(d[i + 1] - d[k + 1]) + Math.abs(d[i + 2] - d[k + 2]) + Math.abs(d[i + 3] - d[k + 3]) < 24;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const j = y * w + x, i = j * 4;
+      solid[j] = (x < st || near(i, i - 4 * st)) && (x >= w - st || near(i, i + 4 * st)) && (y < st || near(i, i - w * 4 * st)) && (y >= h - st || near(i, i + w * 4 * st)) ? 1 : 0;
+    }
+    const out = idx.slice(), cands = [];
+    const DX = [1, -1, 0, 0, 1, 1, -1, -1], DY = [0, 0, 1, -1, 1, -1, 1, -1];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const j = y * w + x, own = idx[j];
+      if (solid[j] || own < 0) continue;
+      cands.length = 0;
+      for (let k = 0; k < 8; k++) for (let s = 1; s <= R; s++) {
+        const xx = x + DX[k] * s, yy = y + DY[k] * s;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) break;
+        const q = yy * w + xx;
+        if (solid[q]) { const c = idx[q]; if (c >= 0 && !cands.includes(c)) cands.push(c); break; }
+      }
+      if (!cands.length || cands.includes(own)) continue;
+      const i = j * 4;
+      const e = (c) => (pal[c][0] - d[i]) ** 2 + (pal[c][1] - d[i + 1]) ** 2 + (pal[c][2] - d[i + 2]) ** 2;
+      if (e(own) <= 20 * 20) continue; // it really is that colour: a thin line, not a blend
+      let best = cands[0];
+      for (const c of cands) if (e(c) < e(best)) best = c;
+      out[j] = best;
+    }
+    idx.set(out);
+  }
+
+  // Every patch of one colour smaller than minArea takes the colour that surrounds
+  // it most. Status per pixel: 0 unseen, 1 settled small, 2 part of a big patch.
+  // A patch that grows past minArea, or touches a pixel already known to be in a
+  // big patch, stops early, so the work stays linear and memory stays small.
+  function removeSpecks(idx, w, h, minArea) {
+    if (minArea < 2) return idx;
+    const n = w * h, status = new Uint8Array(n), q = new Int32Array(minArea + 1), votes = new Map();
+    for (let j0 = 0; j0 < n; j0++) {
+      if (status[j0]) continue;
+      const c = idx[j0];
+      let head = 0, tail = 0, big = false;
+      q[tail++] = j0; status[j0] = 3;
+      grow: while (head < tail) {
+        const j = q[head++], x = j % w;
+        const nb = [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, j >= w ? j - w : -1, j < n - w ? j + w : -1];
+        for (const k of nb) {
+          if (k < 0 || idx[k] !== c) continue;
+          if (status[k] === 2) { big = true; break grow; }
+          if (status[k] === 0) { if (tail >= minArea) { big = true; break grow; } status[k] = 3; q[tail++] = k; }
+        }
+      }
+      if (big) { for (let t = 0; t < tail; t++) status[q[t]] = 2; continue; }
+      votes.clear();
+      for (let t = 0; t < tail; t++) {
+        const j = q[t], x = j % w;
+        for (const k of [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, j >= w ? j - w : -1, j < n - w ? j + w : -1])
+          if (k >= 0 && idx[k] !== c) votes.set(idx[k], (votes.get(idx[k]) || 0) + 1);
+      }
+      let to = c, most = 0;
+      for (const [v, m] of votes) if (m > most) { most = m; to = v; }
+      for (let t = 0; t < tail; t++) { idx[q[t]] = to; status[q[t]] = 1; }
+    }
+    return idx;
+  }
+  // Speck size is set at 2048 px across and scaled with the image's area.
+  const speckArea = (o, w, h) => Math.round(o.turd * (Math.max(w, h) / 2048) ** 2);
+
+  // Majority filter: each pixel takes the most common colour of its 3x3
+  // neighbourhood. Clears the speckle and ragged edges of noisy or upscaled images.
+  function cleanUp(idx, w, h, passes, nCol) {
+    const counts = new Int32Array(nCol + 1);
+    for (let p = 0; p < passes; p++) {
+      const out = new Int16Array(idx.length);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const j = y * w + x;
+        if (x === 0 || y === 0 || x === w - 1 || y === h - 1) { out[j] = idx[j]; continue; }
+        let best = idx[j], bn = 0;
+        for (let yy = -1; yy <= 1; yy++) for (let xx = -1; xx <= 1; xx++) {
+          const v = idx[j + yy * w + xx] + 1, c = ++counts[v];
+          if (c > bn || (c === bn && v - 1 === idx[j])) { bn = c; best = v - 1; }
+        }
+        for (let yy = -1; yy <= 1; yy++) for (let xx = -1; xx <= 1; xx++) counts[idx[j + yy * w + xx] + 1] = 0;
+        out[j] = best;
+      }
+      idx = out;
+    }
+    return idx;
+  }
+
+  function edgeColour(r, pal) {
+    const idx = classify(r, pal, -2), counts = new Map();
+    const add = (j) => { const k = idx[j]; if (k >= 0) counts.set(k, (counts.get(k) || 0) + 1); };
+    for (let x = 0; x < r.w; x++) { add(x); add((r.h - 1) * r.w + x); }
+    for (let y = 0; y < r.h; y++) { add(y * r.w); add(y * r.w + r.w - 1); }
+    let best = -1, n = 0;
+    for (const [k, c] of counts) if (c > n) { best = k; n = c; }
+    return n > (r.w + r.h) ? best : -1;
+  }
+
+  // Palette, background and layer order for the current settings.
+  async function paletteFor(o) {
+    const k = `p${o.mode}${o.merge}${o.edgeBg}${o.thr}${o.maxCol}${o.edges}${JSON.stringify(o.choices)}`;
+    if (state.cache[k]) return state.cache[k];
+    let res;
+    if (o.mode === 'mono') {
+      const fill = state.source.kind === 'svg' ? (declaredColours(state.source.text)[0] || [0, 0, 0]) : [0, 0, 0];
+      res = { pal: [fill], bg: -1, order: [0], share: [1], pinned: [false], merged: [], removed: [] };
+    } else {
+      const r = await cachedRaster(state.source, CMP, false);
+      const declared = state.source.kind === 'svg' ? declaredColours(state.source.text) : [];
+      const found = findPalette(r, o.merge, declared, o.maxCol, o.choices), pal = found.cols;
+      if (!pal.length) throw new Error('Every colour is left out. Click a faded colour in the palette to bring it back.');
+      const bg = o.edgeBg ? edgeColour(r, pal) : -1;
+      const idx = classify(r, pal, bg, o.edges), area = new Array(pal.length).fill(0);
+      for (const k of idx) if (k >= 0) area[k]++;
+      const order = pal.map((_, i) => i).filter((i) => area[i] > 0).sort((a, b) => area[b] - area[a]);
+      // Shares of the artwork. In-use colours are measured from the traced pixels;
+      // merged and removed ones from their solid pixels, so those are estimates.
+      const art = area.reduce((a, b) => a + b, 0) || 1;
+      const solid = found.cand.filter((c) => !(bg >= 0 && dist2(c.c, pal[bg]) <= SAME)).reduce((a, c) => a + c.n, 0) || 1;
+      const share = pal.map((_, i) => area[i] / art);
+      const est = (list) => list.map((m) => ({ c: m.c, share: m.n / solid }));
+      res = { pal, bg, order, share, pinned: found.pinned, merged: est(found.merged), removed: est(found.removed) };
+    }
+    return (state.cache[k] = res);
+  }
+
+  async function indexAt(source, N, o, p) {
+    if (o.mode === 'mono') return monoIndex(await raster(source, N, true), o.thr);
+    return classify(await raster(source, N, false), p.pal, p.bg, o.edges);
+  }
+
+  function potrace(dataUrl, o) {
+    return new Promise((res, rej) => {
+      if (!PotraceFactory) return rej(new Error("The tracing library didn't load. Check the connection and reload."));
+      const P = PotraceFactory(window);
+      P.setParameter({ turnpolicy: 'minority', optcurve: true, turdsize: 2, alphamax: o.alpha, opttolerance: o.tol });
+      P.loadImageFromUrl(dataUrl);
+      P.process(() => { try { res(P.getSVG(1)); } catch (e) { rej(e); } });
+    });
+  }
+
+  // Rewrite Potrace's absolute, three-decimal path as compact relative commands.
+  function compactPath(raw, dec) {
+    const d = (raw.match(/\sd="([^"]*)"/) || [])[1] || '';
+    const f = Math.pow(10, dec), r = (v) => Math.round(v * f) / f;
+    const num = (v) => { let s = String(r(v)); if (s === '-0') s = '0'; return s.replace(/^(-?)0\./, '$1.'); };
+    const toks = d.match(/[MCL]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
+    let out = '', last = '', cx = 0, cy = 0, i = 0, open = false;
+    const emit = (cmd, vals) => {
+      if (!(cmd === last && cmd !== 'M')) out += cmd;
+      for (const v of vals) { const t = num(v); if (/[\d.]$/.test(out) && t[0] !== '-') out += ' '; out += t; }
+      last = cmd;
+    };
+    const n = () => parseFloat(toks[i++]);
+    while (i < toks.length) {
+      const t = toks[i++];
+      if (t === 'M') {
+        if (open) { out += 'z'; last = 'z'; }
+        cx = r(n()); cy = r(n()); emit('M', [cx, cy]); open = true;
+      } else if (t === 'C') {
+        const p = [r(n()), r(n()), r(n()), r(n()), r(n()), r(n())];
+        const rel = p.map((v, k) => r(v - (k % 2 ? cy : cx)));
+        if (rel.some((v) => v !== 0)) emit('c', rel);
+        cx = p[4]; cy = p[5];
+      } else if (t === 'L') {
+        for (let k = 0; k < 2; k++) {
+          const x = r(n()), y = r(n()), dx = r(x - cx), dy = r(y - cy);
+          if (dx || dy) emit('l', [dx, dy]);
+          cx = x; cy = y;
+        }
+      }
+    }
+    if (open) out += 'z';
+    return out;
+  }
+
+  // Smoothing merges curve segments, which is invisible on a big sweeping edge
+  // and obvious on an eye or a letter. So trace twice and let every shape smaller
+  // than the "protect" size take the lightly smoothed version.
+  const subpaths = (raw) => ((raw.match(/\sd="([^"]*)"/) || [])[1] || '').split(/(?=M)/).filter((x) => x.trim());
+  function span(sub) {
+    const v = sub.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi).map(Number);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let i = 0; i + 1 < v.length; i += 2) { x0 = Math.min(x0, v[i]); x1 = Math.max(x1, v[i]); y0 = Math.min(y0, v[i + 1]); y1 = Math.max(y1, v[i + 1]); }
+    return Math.max(x1 - x0, y1 - y0);
+  }
+  async function traceLayer(url, o, long) {
+    const coarse = await potrace(url, o);
+    if (!o.protect || o.tol <= 0.15) return coarse;
+    const fine = await potrace(url, { ...o, tol: 0.1 });
+    const a = subpaths(coarse), b = subpaths(fine);
+    if (a.length !== b.length) return fine;
+    const limit = long * o.protect / 100;
+    return ` d="${a.map((sub, i) => span(b[i]) < limit ? b[i] : sub).join(' ')}"`;
+  }
+
+  async function traceOnce(o, progress) {
+    const p = await paletteFor(o);
+    const R = await cachedRaster(state.source, o.grid, o.mode === 'mono');
+    let idx = o.mode === 'mono' ? monoIndex(R, o.thr) : classify(R, p.pal, p.bg, o.edges);
+    if (o.clean) idx = cleanUp(idx, R.w, R.h, o.clean, p.pal.length);
+    idx = removeSpecks(idx, R.w, R.h, speckArea(o, R.w, R.h));
+    const rank = new Int16Array(p.pal.length).fill(-1);
+    p.order.forEach((ci, k) => { rank[ci] = k; });
+    const c = document.createElement('canvas'); c.width = R.w; c.height = R.h;
+    const ctx = c.getContext('2d'), img = ctx.createImageData(R.w, R.h), px = img.data;
+    const paths = [];
+    for (let k = 0; k < p.order.length; k++) {
+      if (progress) { progress(k, p.order.length); await tick(); }
+      // Stacked: each layer also covers every colour painted above it.
+      for (let j = 0, q = 0; j < idx.length; j++, q += 4) {
+        const on = idx[j] >= 0 && rank[idx[j]] >= k;
+        px[q] = px[q + 1] = px[q + 2] = on ? 0 : 255; px[q + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+      const d = compactPath(await traceLayer(c.toDataURL('image/png'), o, Math.max(R.w, R.h)), o.dec);
+      if (!d) continue;
+      const hex = toHex(p.pal[p.order[k]]);
+      paths.push(`<path${hex === '#000000' ? '' : ` fill="${hex}"`} d="${d}"/>`);
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${R.w} ${R.h}" fill-rule="evenodd">${paths.join('')}</svg>\n`;
+    const cmp = await compare(svg, o, p);
+    return { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers: paths.length, ...cmp, opts: o };
+  }
+
+  async function compare(svg, o, p) {
+    const k = `c${o.mode}${o.merge}${o.edgeBg}${o.thr}${o.maxCol}${o.edges}${JSON.stringify(o.choices)}`;
+    const aIdx = state.cache[k] || (state.cache[k] = await indexAt(state.source, CMP, o, p));
+    const a = await cachedRaster(state.source, CMP, false);
+    const bR = await raster({ kind: 'svg', text: svg }, CMP, o.mode === 'mono');
+    const bIdx = o.mode === 'mono' ? monoIndex(bR, 128) : classify(bR, p.pal, p.bg, o.edges);
+    const w = Math.min(a.w, bR.w), h = Math.min(a.h, bR.h);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d'), id = ctx.createImageData(w, h), px = id.data;
+    // A pixel only counts as changed if the other image has no pixel of the
+    // same colour within one pixel of it. Edges that moved by less than a
+    // hairline are invisible, and otherwise swamp the count on busy artwork.
+    const near = (idx, iw, x, y, v) => {
+      for (let yy = Math.max(0, y - 1); yy <= Math.min(h - 1, y + 1); yy++)
+        for (let xx = Math.max(0, x - 1); xx <= Math.min(w - 1, x + 1); xx++)
+          if (idx[yy * iw + xx] === v) return true;
+      return false;
+    };
+    // Blended edge pixels can land on a third palette colour by accident, so a
+    // change only counts where at least one image is solid colour. A lost
+    // detail or an added blob always leaves solid colour behind in one of them.
+    const aD = o.mode === 'mono' ? (await cachedRaster(state.source, CMP, true)).data : a.data, bD = bR.data;
+    const solid = (d, iw, x, y) => {
+      const i = (y * iw + x) * 4;
+      const same = (k) => Math.abs(d[i] - d[k]) + Math.abs(d[i + 1] - d[k + 1]) + Math.abs(d[i + 2] - d[k + 2]) + Math.abs(d[i + 3] - d[k + 3]) < 24;
+      return (x === 0 || same(i - 4)) && (x === w - 1 || same(i + 4)) && (y === 0 || same(i - iw * 4)) && (y === h - 1 || same(i + iw * 4));
+    };
+    let diff = 0, ink = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const ia = y * a.w + x, ib = y * bR.w + x, q = (y * w + x) * 4;
+      const va = aIdx[ia], vb = bIdx[ib];
+      if (va >= 0) ink++;
+      if (va !== vb && !(near(bIdx, bR.w, x, y, va) && near(aIdx, a.w, x, y, vb)) && (solid(aD, a.w, x, y) || solid(bD, bR.w, x, y))) { diff++; px[q] = 214; px[q + 1] = 40; px[q + 2] = 40; px[q + 3] = 255; }
+      else if (va >= 0) { px[q] = 20; px[q + 1] = 26; px[q + 2] = 34; px[q + 3] = 34; }
+    }
+    ctx.putImageData(id, 0, 0);
+    return { diffPct: ink ? (100 * diff / ink) : 0, diffUrl: c.toDataURL('image/png') };
+  }
+
+  // ---------- rendering ----------
+  function showOriginal() {
+    showOrigView();
+    const cols = state.source.kind === 'svg' ? declaredColours(state.source.text).length : null;
+    $('footA').innerHTML = `<span><b>${fmtBytes(state.origBytes)}</b></span>` +
+      (state.origPoints != null ? `<span>≈ <b>${state.origPoints.toLocaleString()}</b> points</span>` : '<span>raster image</span>') +
+      (cols ? `<span><b>${cols}</b> colour${cols === 1 ? '' : 's'}</span>` : '');
+  }
+
+  // ---------- quantized image ----------
+  // The original reduced to the palette: the same pass the tracer starts from
+  // (nearest colour, background flood, clean-up), at any size.
+  async function quantize(N) {
+    const o = opts(), p = await paletteFor(o);
+    const r = await raster(state.source, N, o.mode === 'mono');
+    let idx = o.mode === 'mono' ? monoIndex(r, o.thr) : classify(r, p.pal, p.bg, o.edges);
+    if (o.clean) idx = cleanUp(idx, r.w, r.h, o.clean, p.pal.length);
+    idx = removeSpecks(idx, r.w, r.h, speckArea(o, r.w, r.h));
+    return { w: r.w, h: r.h, idx, pal: p.pal };
+  }
+
+  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  function chunk(type, data) {
+    const out = new Uint8Array(12 + data.length), dv = new DataView(out.buffer);
+    dv.setUint32(0, data.length);
+    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    out.set(data, 8);
+    let c = 0xffffffff;
+    for (let i = 4; i < 8 + data.length; i++) c = CRC[(c ^ out[i]) & 255] ^ (c >>> 8);
+    dv.setUint32(8 + data.length, (c ^ 0xffffffff) >>> 0);
+    return out;
+  }
+  // An indexed (palette) PNG: one small number per pixel instead of four bytes,
+  // at 1, 2, 4 or 8 bits depending on how many colours are used.
+  async function indexedPng(q) {
+    const used = new Uint8Array(q.pal.length + 1);
+    for (const v of q.idx) used[v + 1] = 1;
+    const map = new Int16Array(q.pal.length + 1).fill(-1), entries = [];
+    if (used[0]) { map[0] = 0; entries.push(null); } // transparent first, so tRNS is one byte
+    for (let i = 0; i < q.pal.length; i++) if (used[i + 1]) { map[i + 1] = entries.length; entries.push(q.pal[i]); }
+    const n = entries.length, depth = n <= 2 ? 1 : n <= 4 ? 2 : n <= 16 ? 4 : 8;
+    const rowBytes = Math.ceil(q.w * depth / 8), raw = new Uint8Array((rowBytes + 1) * q.h);
+    for (let y = 0; y < q.h; y++) {
+      const o = y * (rowBytes + 1) + 1;
+      for (let x = 0; x < q.w; x++) {
+        const v = map[q.idx[y * q.w + x] + 1];
+        if (depth === 8) raw[o + x] = v;
+        else { const bit = x * depth; raw[o + (bit >> 3)] |= v << (8 - depth - (bit & 7)); }
+      }
+    }
+    const ihdr = new Uint8Array(13), dv = new DataView(ihdr.buffer);
+    dv.setUint32(0, q.w); dv.setUint32(4, q.h); ihdr[8] = depth; ihdr[9] = 3;
+    const plte = new Uint8Array(n * 3);
+    entries.forEach((c, i) => { if (c) plte.set(c, i * 3); });
+    const idat = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+    const parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('PLTE', plte)];
+    if (entries[0] === null) parts.push(chunk('tRNS', new Uint8Array([0])));
+    parts.push(chunk('IDAT', idat), chunk('IEND', new Uint8Array(0)));
+    return { blob: new Blob(parts, { type: 'image/png' }), colours: entries.filter(Boolean).length, transparent: entries[0] === null };
+  }
+  // Fallback where CompressionStream is missing: an ordinary PNG with the same pixels.
+  function rgbaPng(q) {
+    const c = document.createElement('canvas'); c.width = q.w; c.height = q.h;
+    const ctx = c.getContext('2d'), id = ctx.createImageData(q.w, q.h), px = id.data;
+    for (let j = 0; j < q.idx.length; j++) { const v = q.idx[j]; if (v < 0) continue; const k = j * 4, col = q.pal[v]; px[k] = col[0]; px[k + 1] = col[1]; px[k + 2] = col[2]; px[k + 3] = 255; }
+    ctx.putImageData(id, 0, 0);
+    return c;
+  }
+
+  let origView = 'orig';
+  async function showQuantPreview() {
+    if (origView !== 'quant' || !state.source) return;
+    try {
+      const q = await quantize(1024);
+      $('imgA').src = rgbaPng(q).toDataURL('image/png'); $('imgA').alt = 'The original reduced to the palette colours';
+    } catch (e) { status(e.message || String(e)); }
+  }
+  function showOrigView() {
+    $('origSeg').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.v === origView)));
+    if (origView === 'quant') showQuantPreview();
+    else if (state.source) { const blob = state.source.kind === 'svg' ? new Blob([state.source.text], { type: 'image/svg+xml' }) : state.source.blob; $('imgA').src = blobUrl(blob); $('imgA').alt = 'The original artwork'; }
+  }
+  $('origSeg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; origView = b.dataset.v; showOrigView(); });
+
+  async function showPalette() {
+    if (state.mode !== 'colour' || !state.source) { showQuantPreview(); return; }
+    try {
+      const p = await paletteFor(opts());
+      const pct = (v, approx) => { const x = 100 * v; return (approx ? '≈' : '') + (x >= 10 ? x.toFixed(0) : x >= 0.1 ? x.toFixed(1) : '<0.1') + '%'; };
+      const chip = (c, kind, share) => {
+        const h = toHex(c), sh = pct(share, kind === 'merged' || kind === 'removed');
+        const label = { on: `${h}, in use. Click to lock it in.`, pin: `${h}, locked in. Click to leave it out.`, merged: `${h}, merged away. Click to bring it back and lock it in.`, removed: `${h}, left out. Click to let the palette decide again.` }[kind];
+        return `<li><button type="button" class="sw ${kind}" data-hex="${h}" data-kind="${kind}" aria-pressed="${kind === 'on' || kind === 'pin'}" title="${label}" aria-label="${label} ${sh} of the artwork."><i style="background:${h}"></i>${h}<span class="pct">${sh}</span></button></li>`;
+      };
+      $('swatches').innerHTML =
+        p.order.map((i) => chip(p.pal[i], p.pinned[i] ? 'pin' : 'on', p.share[i])).join('') +
+        p.merged.map((m) => chip(m.c, 'merged', m.share)).join('') +
+        p.removed.map((m) => chip(m.c, 'removed', m.share)).join('');
+      $('palCount').textContent = `${p.order.length} in use`;
+      $('palReset').hidden = !(state.choices.keep.length || state.choices.drop.length);
+    } catch { /* surfaced by run() */ }
+    showQuantPreview();
+  }
+
+  function showResult() {
+    const r = state.result;
+    if (!r) return;
+    $('sizes').innerHTML = `${fmtBytes(state.origBytes)}<span class="arrow">→</span>${fmtBytes(r.bytes)}`;
+    const pct = Math.round(100 * (1 - r.bytes / state.origBytes));
+    $('saving').textContent = pct >= 0 ? `${pct}% smaller` : `${-pct}% bigger`;
+    const pill = $('pill'), dp = r.diffPct;
+    const [cls, txt] = dp < 0.2 ? ['good', 'Looks the same'] : dp < 1 ? ['warn', 'Check fine details'] : ['bad', 'Visibly different'];
+    pill.className = `pill ${cls}`; pill.textContent = `${txt} · ${dp.toFixed(2)}% of pixels differ`; pill.hidden = false;
+    $('footB').innerHTML = `<span><b>${fmtBytes(r.bytes)}</b></span><span>≈ <b>${r.points.toLocaleString()}</b> points</span>` +
+      (r.opts.mode === 'colour' ? `<span><b>${r.layers}</b> layer${r.layers === 1 ? '' : 's'}</span>` : '') +
+      `<span>grid <b>${r.opts.grid}</b> · smoothing <b>${r.opts.tol}</b></span>`;
+    $('code').value = r.svg;
+    syncActions();
+    renderView();
+  }
+
+  function renderView() {
+    const r = state.result; if (!r) return;
+    const img = $('imgB');
+    if (state.view === 'diff') { img.src = r.diffUrl; img.classList.add('pix'); img.alt = 'Pixels that changed, in red, over a faint copy of the original'; }
+    else { img.src = blobUrl(new Blob([r.svg], { type: 'image/svg+xml' })); img.classList.remove('pix'); img.alt = 'The slimmed artwork'; }
+    $('legend').hidden = state.view !== 'diff';
+  }
+
+  // Nothing to copy or save until there is something to copy or save.
+  function syncActions() {
+    $('copyBtn').disabled = $('dlBtn').disabled = !state.result;
+    $('pngBtn').disabled = $('pngSize').disabled = !state.source;
+  }
+
+  function clearResult() {
+    $('sizes').textContent = fmtBytes(state.origBytes); $('saving').textContent = ''; $('pill').hidden = true;
+    $('imgB').removeAttribute('src'); $('footB').innerHTML = ''; $('code').value = '';
+    syncActions();
+  }
+
+  function releaseUrls() { state.urls.splice(0).forEach((u) => URL.revokeObjectURL(u)); }
+
+  // ---------- pipeline ----------
+  const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, choices: state.choices });
+  const layerMsg = (prefix) => (k, n) => status(n > 1 ? `${prefix}layer ${k + 1} of ${n}…` : `${prefix}…`);
+
+  async function run() {
+    if (!state.source) return;
+    const id = ++state.run;
+    status('Tracing…'); await tick();
+    try {
+      await showPalette();
+      const res = await traceOnce(opts(), (k, n) => { if (id === state.run) layerMsg('Tracing ')(k, n); });
+      if (id !== state.run) return;
+      state.result = res; showResult(); status(''); $('traceBtn').classList.remove('primary');
+    } catch (e) { if (id === state.run) status(e.message || String(e)); }
+  }
+  // With automatic updates off, a change only refreshes the palette (quick) and
+  // waits for Trace, so big images and slow settings don't retrace on every nudge.
+  let auto = true;
+  try { auto = localStorage.getItem('svgslim-auto') !== 'off'; } catch { /* storage blocked */ }
+  let timer;
+  const schedule = () => {
+    clearTimeout(timer);
+    if (auto) { timer = setTimeout(run, 350); return; }
+    state.run++;
+    timer = setTimeout(() => { showPalette(); }, 200);
+    $('traceBtn').classList.add('primary'); status('Settings changed. Press Trace to see the result.');
+  };
+  function syncAuto() {
+    $('autoRun').checked = auto; $('traceBtn').hidden = auto;
+  }
+  $('autoRun').addEventListener('change', (e) => {
+    auto = e.target.checked; syncAuto();
+    try { localStorage.setItem('svgslim-auto', auto ? 'on' : 'off'); } catch { /* storage blocked */ }
+    if (auto && $('traceBtn').classList.contains('primary')) run();
+  });
+  $('traceBtn').addEventListener('click', () => run());
+  syncAuto();
+
+  async function findSmallest() {
+    if (!state.source) return;
+    const target = Math.max(0.01, parseFloat($('target').value) || 0.2);
+    const btn = $('autoBtn'); btn.disabled = true;
+    const id = ++state.run;
+    const tries = [];
+    const plan = [[1024, 1.0], [1024, 0.5], [1024, 0.2], [2048, 1.0], [2048, 0.5], [2048, 0.2]];
+    const attempt = async (grid, tol, label) => {
+      tries.push(await traceOnce({ ...opts(), grid, tol }, (k, n) => status(`${label}${n > 1 ? `, layer ${k + 1} of ${n}` : ''}…`)));
+      return id === state.run;
+    };
+    try {
+      for (let k = 0; k < plan.length; k++)
+        if (!await attempt(plan[k][0], plan[k][1], `Trying ${k + 1} of ${plan.length}: grid ${plan[k][0]}, smoothing ${plan[k][1]}`)) return;
+      if (!tries.some((t) => t.diffPct <= target))
+        for (const tol of [0.5, 0.2]) if (!await attempt(4096, tol, `Trying grid 4096, smoothing ${tol}`)) return;
+      const ok = tries.filter((t) => t.diffPct <= target).sort((a, b) => a.bytes - b.bytes);
+      const pick = ok[0] || tries.slice().sort((a, b) => a.diffPct - b.diffPct)[0];
+      state.grid = pick.opts.grid; state.tol = pick.opts.tol; syncControls();
+      state.result = pick; showResult();
+      status(ok.length ? `Smallest within ${target}%: grid ${pick.opts.grid}, smoothing ${pick.opts.tol}.` : `Nothing got within ${target}%. Showing the closest match. Try allowing a bigger difference.`);
+    } catch (e) { status(e.message || String(e)); }
+    finally { btn.disabled = false; }
+  }
+
+  async function loadSource(src, name, bytes) {
+    releaseUrls();
+    state.source = src; state.name = name.replace(/\s*\(sample\)$/, '').replace(/\.[^.]+$/, '') || 'logo'; state.origBytes = bytes;
+    state.origPoints = src.kind === 'svg' ? countPoints(src.text) : null;
+    state.cache = {}; state.result = null; state.choices = { keep: [], drop: [] }; syncActions();
+    const bitmap = src.kind === 'raster';
+    // "Original size" only means something for a bitmap.
+    const origOpt = $('pngSize').querySelector('option[value="orig"]');
+    origOpt.hidden = origOpt.disabled = !bitmap;
+    if (!bitmap && $('pngSize').value === 'orig') $('pngSize').value = '2048';
+    state.edgeBg = bitmap; state.maxCol = bitmap ? 8 : 24; state.clean = bitmap ? 1 : 0; syncControls();
+    $('fileName').textContent = name;
+    try {
+      if (src.kind === 'svg') sizedSvg(src.text, 16);
+      showOriginal();
+      if (auto) await run();
+      else { clearResult(); await showPalette(); $('traceBtn').classList.add('primary'); status('Loaded. Press Trace to trace it.'); }
+    }
+    catch (e) { status(e.message || String(e)); }
+  }
+
+  async function loadFile(file) {
+    if (!file) return;
+    if (/svg/i.test(file.type) || /\.svg$/i.test(file.name)) loadSource({ kind: 'svg', text: await file.text() }, file.name, file.size);
+    else if (/^image\//.test(file.type)) loadSource({ kind: 'raster', blob: file }, file.name, file.size);
+    else status('Open an SVG, PNG, JPEG or WebP file.');
+  }
+
+  // ---------- controls ----------
+  const PRESETS = {
+    small: { grid: 1024, tol: 1.0, protect: 0, dec: 0 },
+    balanced: { grid: 2048, tol: 0.5, protect: 6, dec: 0 },
+    fine: { grid: 4096, tol: 0.2, protect: 15, dec: 1 },
+  };
+  function syncControls() {
+    const preset = Object.keys(PRESETS).find((k) => Object.entries(PRESETS[k]).every(([key, v]) => state[key] === v));
+    $('presetSeg').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === preset)));
+    $('presetNote').textContent = preset ? '' : 'custom';
+    $('protect').value = state.protect; $('protectV').textContent = state.protect ? `${state.protect}%` : 'off';
+    $('maxCol').value = state.maxCol; $('maxColV').textContent = state.maxCol;
+    $('clean').value = state.clean; $('cleanV').textContent = state.clean ? `${state.clean} pass${state.clean > 1 ? 'es' : ''}` : 'off';
+    for (const [seg, v] of [['gridSeg', state.grid], ['decSeg', state.dec], ['colourSeg', state.mode]])
+      $(seg).querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === String(v))));
+    document.querySelectorAll('.colour-only').forEach((el) => { el.hidden = state.mode !== 'colour'; });
+    document.querySelectorAll('.mono-only').forEach((el) => { el.hidden = state.mode !== 'mono'; });
+    $('tol').value = state.tol; $('tolV').textContent = state.tol.toFixed(1);
+    $('alpha').value = state.alpha; $('alphaV').textContent = state.alpha.toFixed(1);
+    $('turd').value = state.turd; $('turdV').textContent = state.turd ? `${state.turd} px` : 'off';
+    $('thr').value = state.thr; $('thrV').textContent = state.thr;
+    $('merge').value = state.merge; $('mergeV').textContent = state.merge;
+    $('edgeBg').checked = state.edgeBg;
+    $('edges').checked = state.edges;
+  }
+  function segClicks(id, key, numeric) {
+    $(id).addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      state[key] = numeric ? Number(b.dataset.v) : b.dataset.v; syncControls(); schedule();
+    });
+  }
+  segClicks('gridSeg', 'grid', true); segClicks('decSeg', 'dec', true); segClicks('colourSeg', 'mode', false);
+  const rgb = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+  const without = (list, c) => list.filter((q) => dist2(q, c) > SAME);
+  $('swatches').addEventListener('click', (e) => {
+    const b = e.target.closest('.sw'); if (!b) return;
+    const c = rgb(b.dataset.hex), ch = state.choices;
+    // One click locks, a second leaves it out, a third hands it back to the palette.
+    const kind = b.dataset.kind;
+    if (kind === 'pin') state.choices = { keep: without(ch.keep, c), drop: [...without(ch.drop, c), c] };
+    else if (kind === 'removed') state.choices = { keep: without(ch.keep, c), drop: without(ch.drop, c) };
+    else state.choices = { keep: [...without(ch.keep, c), c], drop: without(ch.drop, c) };
+    schedule();
+  });
+  $('palReset').addEventListener('click', () => { state.choices = { keep: [], drop: [] }; schedule(); });
+  $('presetSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    Object.assign(state, PRESETS[b.dataset.v]); syncControls(); schedule();
+  });
+  for (const [id, key] of [['tol', 'tol'], ['alpha', 'alpha'], ['turd', 'turd'], ['thr', 'thr'], ['merge', 'merge'], ['protect', 'protect'], ['maxCol', 'maxCol'], ['clean', 'clean']])
+    $(id).addEventListener('input', (e) => { state[key] = Number(e.target.value); syncControls(); schedule(); });
+  $('edgeBg').addEventListener('change', (e) => { state.edgeBg = e.target.checked; schedule(); });
+  $('edges').addEventListener('change', (e) => { state.edges = e.target.checked; schedule(); });
+
+  $('modeSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.view = b.dataset.v;
+    $('modeSeg').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    renderView();
+  });
+
+  const stages = [$('stageA'), $('stageB')];
+  $('zoom').addEventListener('input', (e) => {
+    const z = Number(e.target.value); $('zoomV').textContent = `${z}×`;
+    stages.forEach((s) => s.style.setProperty('--zoom', z));
+  });
+  let syncing = false;
+  stages.forEach((s, i) => s.addEventListener('scroll', () => {
+    if (syncing) { syncing = false; return; }
+    const o = stages[1 - i]; syncing = true; o.scrollLeft = s.scrollLeft; o.scrollTop = s.scrollTop;
+  }));
+
+  const drop = $('drop'), input = $('fileInput');
+  drop.addEventListener('click', () => input.click());
+  drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
+  input.addEventListener('change', () => { loadFile(input.files[0]); input.value = ''; });
+  ['dragenter', 'dragover'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || !e.relatedTarget) drop.classList.remove('over'); }));
+  document.addEventListener('drop', (e) => loadFile(e.dataTransfer && e.dataTransfer.files[0]));
+  document.addEventListener('paste', (e) => {
+    if (e.target && e.target.closest && e.target.closest('input,textarea')) return;
+    const file = [...(e.clipboardData?.files || [])][0];
+    if (file) return loadFile(file);
+    const text = e.clipboardData?.getData('text') || '';
+    if (/<svg[\s>]/i.test(text)) loadSource({ kind: 'svg', text }, 'pasted.svg', new Blob([text]).size);
+  });
+
+  $('autoBtn').addEventListener('click', findSmallest);
+
+  $('copyBtn').addEventListener('click', () => {
+    if (!state.result) return;
+    const fallback = () => { const d = document.querySelector('details.code'); d.open = true; $('code').focus(); $('code').select(); status('Press Cmd-C or Ctrl-C to copy the selected code.'); };
+    try { navigator.clipboard.writeText(state.result.svg).then(() => status('SVG copied.'), fallback); } catch { fallback(); }
+  });
+
+  // Inside claude.ai the page can only save files through the downloads
+  // capability; anywhere else an ordinary <a download> does the job.
+  let downloads = null;
+  const inClaude = !!(window.claude && typeof window.claude.use === 'function');
+  if (inClaude) {
+    window.claude.use('downloads').then((d) => { downloads = d; $('dlBtn').hidden = !d; $('pngGroup').hidden = !d; }).catch(() => {});
+  } else {
+    $('dlBtn').hidden = false; $('pngGroup').hidden = false;
+  }
+  async function saveFile(filename, data) {
+    if (downloads) return downloads.save({ filename, data });
+    if (inClaude) throw Object.assign(new Error('Downloads are unavailable here.'), { code: 'unavailable' });
+    const blob = data instanceof Blob ? data : new Blob([data], { type: /\.svg$/.test(filename) ? 'image/svg+xml' : 'application/octet-stream' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    return { status: 'saved' };
+  }
+  $('dlBtn').addEventListener('click', async () => {
+    if (!state.result) return;
+    try { await saveFile(`${state.name}-min.svg`, state.result.svg); status('Saved.'); }
+    catch (e) {
+      if (e && e.code === 'declined') status('Download cancelled.');
+      else if (e && e.code === 'rate_limited') status('A save is already waiting for an answer.');
+      else { $('dlBtn').hidden = true; status('Downloads are unavailable here. Use Copy SVG instead.'); }
+    }
+  });
+
+  $('pngBtn').addEventListener('click', async () => {
+    if (!state.source) return;
+    const sel = $('pngSize').value;
+    let N = Number(sel);
+    if (sel === 'orig') {
+      { const img = state.cache.img || (state.cache.img = await loadImage(blobUrl(state.source.blob))); N = Math.max(img.naturalWidth, img.naturalHeight); }
+    }
+    try {
+      status(`Quantizing at ${N} px…`); await tick();
+      const q = await quantize(N);
+      let blob, colours;
+      if (typeof CompressionStream === 'function') ({ blob, colours } = await indexedPng(q));
+      else { blob = await new Promise((res) => rgbaPng(q).toBlob(res, 'image/png')); colours = q.pal.length; }
+      if (!blob) throw new Error('That size is too big for this browser. Pick a smaller one.');
+      await saveFile(`${state.name}-${colours}-colours.png`, blob);
+      status(`Saved: ${q.w} × ${q.h}, ${colours} colours, ${fmtBytes(blob.size)}.`);
+    } catch (e) {
+      if (e && e.code === 'declined') status('Download cancelled.');
+      else if (e && e.code === 'rate_limited') status('A save is already waiting for an answer.');
+      else if (e && e.code) { $('pngGroup').hidden = true; status('Downloads are unavailable here.'); }
+      else status(e.message || String(e));
+    }
+  });
+
+  // ---------- start with the sample ----------
+  syncControls();
+  $('sizes').textContent = 'No file yet';
+  syncActions();
+  status('Open an SVG or PNG, drop one anywhere on the page, or paste SVG code.');
+})();
+</script>
