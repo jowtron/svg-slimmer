@@ -698,10 +698,14 @@
   function potrace(dataUrl, o) {
     return new Promise((res, rej) => {
       if (!PotraceFactory) return rej(new Error("The tracing library didn't load. Check the connection and reload."));
-      const P = PotraceFactory(window);
+      // Hand the library its own <img> so we can wait for it to load. Its process()
+      // otherwise finds the image not yet decoded and sleeps 100 ms before trying again.
+      let img;
+      const P = PotraceFactory({ document: { createElement: (t) => { const e = document.createElement(t); if (t === 'img') img = e; return e; } } });
       P.setParameter({ turnpolicy: 'minority', optcurve: true, turdsize: 2, alphamax: o.alpha, opttolerance: o.tol });
+      img.addEventListener('load', () => P.process(() => { try { res(P.getSVG(1)); } catch (e) { rej(e); } }), { once: true });
+      img.addEventListener('error', () => rej(new Error("The tracing library couldn't read a layer.")), { once: true });
       P.loadImageFromUrl(dataUrl);
-      P.process(() => { try { res(P.getSVG(1)); } catch (e) { rej(e); } });
     });
   }
 
@@ -711,17 +715,19 @@
     const f = Math.pow(10, dec), r = (v) => Math.round(v * f) / f;
     const num = (v) => { let s = String(r(v)); if (s === '-0') s = '0'; return s.replace(/^(-?)0\./, '$1.'); };
     const toks = d.match(/[MCL]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
-    let out = '', last = '', cx = 0, cy = 0, i = 0, open = false;
+    // `digit` says whether `out` ends in a number. Testing `out` itself instead
+    // makes V8 flatten the growing string on every call, which is quadratic.
+    let out = '', last = '', cx = 0, cy = 0, i = 0, open = false, digit = false;
     const emit = (cmd, vals) => {
-      if (!(cmd === last && cmd !== 'M')) out += cmd;
-      for (const v of vals) { const t = num(v); if (/[\d.]$/.test(out) && t[0] !== '-') out += ' '; out += t; }
+      if (!(cmd === last && cmd !== 'M')) { out += cmd; digit = false; }
+      for (const v of vals) { const t = num(v); if (digit && t[0] !== '-') out += ' '; out += t; digit = true; }
       last = cmd;
     };
     const n = () => parseFloat(toks[i++]);
     while (i < toks.length) {
       const t = toks[i++];
       if (t === 'M') {
-        if (open) { out += 'z'; last = 'z'; }
+        if (open) { out += 'z'; last = 'z'; digit = false; }
         cx = r(n()); cy = r(n()); emit('M', [cx, cy]); open = true;
       } else if (t === 'C') {
         const p = [r(n()), r(n()), r(n()), r(n()), r(n()), r(n())];
