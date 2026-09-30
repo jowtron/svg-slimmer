@@ -2,7 +2,17 @@
 // complete document for static hosting, and writes it to dist/.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
-const page = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+// The core, compiled by `npm run wasm`, goes into the page itself, so dist/index.html
+// still works as a single file: served, opened from disk, or published as an artifact.
+const wasm = readFileSync(new URL('./target/wasm32-unknown-unknown/wasm/slimmer_wasm.wasm', import.meta.url));
+const rt = readFileSync(new URL('./web/core-rt.js', import.meta.url), 'utf8');
+const fill = (text, marker, value) => {
+  if (!text.includes(marker)) throw new Error(`index.html: ${marker} not found`);
+  return text.replace(marker, () => value);
+};
+let page = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+page = fill(page, '/*@core-rt*/', rt);
+page = fill(page, '/*@core-wasm*/', wasm.toString('base64'));
 const split = page.indexOf('<div class="shell">');
 if (split < 0) throw new Error('index.html: <div class="shell"> not found');
 const head = page.slice(0, split).trim();
@@ -32,4 +42,4 @@ ${body}
 
 mkdirSync(new URL('./dist/', import.meta.url), { recursive: true });
 writeFileSync(new URL('./dist/index.html', import.meta.url), doc);
-console.log(`dist/index.html  ${(doc.length / 1000).toFixed(1)} KB`);
+console.log(`dist/index.html  ${(doc.length / 1000).toFixed(1)} KB (core ${(wasm.length / 1000).toFixed(0)} KB)`);

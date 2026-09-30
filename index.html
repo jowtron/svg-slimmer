@@ -319,18 +319,19 @@
 
   <footer>
     <p>Works on SVGs and on bitmap images (PNG, JPEG, WebP), and best on flat artwork: logos, icons and illustrations with a handful of solid colours. Gradients and soft shadows are reduced to the nearest solid colour, and text is traced as shapes. Differences are measured at 2048 pixels on the long side, and an edge that moved by less than one pixel there doesn't count.</p>
-    <p>Tracing by Potrace (Peter Selinger), in the JavaScript port by kilobtye.</p>
+    <p>Tracing by Potrace (Peter Selinger), ported to Rust from the JavaScript port by kilobtye.</p>
   </footer>
 </div>
 
 
 
-<script>window.module = window.module || { exports: {} };</script>
-<script src="https://cdn.jsdelivr.net/npm/potrace-browser@0.0.1/potrace.js"></script>
+<!-- build.mjs fills these two in: the core's message runtime (web/core-rt.js) and
+     the core compiled to WebAssembly, base64 encoded. -->
+<script id="core-rt">/*@core-rt*/</script>
+<script id="core-wasm" type="application/octet-stream">/*@core-wasm*/</script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const PotraceFactory = window.Potrace || (window.module && window.module.exports);
   const CMP = 2048; // resolution the original and the result are compared at
 
   const state = {
@@ -416,425 +417,152 @@
     ctx.drawImage(img, 0, 0, w, h);
     return { w, h, data: ctx.getImageData(0, 0, w, h).data };
   }
-  async function cachedRaster(source, N, onWhite) {
-    const k = `r${N}${onWhite ? 'w' : 't'}`;
-    if (!state.cache[k]) state.cache[k] = await raster(source, N, onWhite);
+  // Cached as promises, so attempts running in parallel share one draw.
+  function cachedRaster(source, N, onWhite) {
+    return cached(`r${N}${onWhite ? 'w' : 't'}`, () => raster(source, N, onWhite));
+  }
+  function cached(k, make) {
+    if (!state.cache[k]) state.cache[k] = make().catch((e) => { delete state.cache[k]; throw e; });
     return state.cache[k];
   }
 
-  // One-colour: dark pixels (over white) are the shape.
-  function monoIndex(r, thr) {
-    const d = r.data, idx = new Int16Array(r.w * r.h);
-    for (let i = 0, j = 0; i < d.length; i += 4, j++) idx[j] = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) < thr ? 0 : -1;
-    return idx;
-  }
-
-  // Find the palette from the pixels, then snap to the colours the SVG declares.
-  // `choices` holds the viewer's picks: colours to keep no matter what, and
-  // colours to leave out. Returns the palette plus what was merged or removed.
-  const SAME = 24 * 24; // how close a colour must be to count as one the viewer picked
-  function findPalette(r, merge, declared, maxCol, choices) {
-    const d = r.data, w = r.w, bins = new Map();
-    const flat = (i, k) => Math.abs(d[i] - d[k]) + Math.abs(d[i + 1] - d[k + 1]) + Math.abs(d[i + 2] - d[k + 2]) + Math.abs(d[i + 3] - d[k + 3]) < 12;
-    // Only solid areas count: a pixel matching its right and lower neighbours.
-    // Blended edge pixels between two colours never become colours of their own.
-    for (let y = 0; y < r.h - 1; y++) for (let x = 0; x < w - 1; x++) {
-      const i = (y * w + x) * 4;
-      if (d[i + 3] < 250 || !flat(i, i + 4) || !flat(i, i + w * 4)) continue;
-      const key = (d[i] >> 3) << 10 | (d[i + 1] >> 3) << 5 | (d[i + 2] >> 3);
-      let b = bins.get(key); if (!b) bins.set(key, b = [0, 0, 0, 0]);
-      b[0] += d[i]; b[1] += d[i + 1]; b[2] += d[i + 2]; b[3]++;
+  // ---------- the core ----------
+  // Palette, quantize, trace and compare run in slimmer-core (Rust): natively in
+  // the desktop app, and here as WebAssembly in a pool of workers, one request
+  // per worker at a time. core/src/api.rs describes the messages.
+  const core = (() => {
+    const tauri = window.__TAURI_INTERNALS__;
+    let send, lanes;
+    if (tauri) {
+      // The desktop app runs each request natively and traces layers in parallel itself.
+      send = async (msg) => new Uint8Array(await tauri.invoke('core', msg));
+      lanes = () => 1;
+    } else {
+      ({ send, lanes } = wasmPool());
     }
-    const snap = (c) => {
-      c = c.map(Math.round);
-      if (declared.length) {
-        const near = declared.reduce((a, b) => dist2(b, c) < dist2(a, c) ? b : a);
-        if (dist2(near, c) <= 30 * 30) c = near;
-      }
-      return c;
+    const call = async (head, bufs) => {
+      const r = slimUnpack(await send(slimPack(head, bufs)));
+      if (r.head.error) throw new Error(r.head.error);
+      return r;
     };
-    const all = [...bins.values()].map((b) => ({ c: [b[0] / b[3], b[1] / b[3], b[2] / b[3]], n: b[3] }));
-    // A fixed floor rather than a share of the image: a big background would
-    // otherwise push a small, distinct colour (an eye) under the bar.
-    const buckets = all.filter((b) => b.n >= 12).sort((a, b) => b.n - a.n);
-    const m2 = Math.max(merge * merge, 64);
-    const cand = [];
-    for (const b of buckets) {
-      const hit = cand.find((p) => dist2(p.c, b.c) <= m2);
-      if (hit) hit.n += b.n; else cand.push({ c: b.c.slice(), n: b.n });
-      if (cand.length >= 64) break;
-    }
-    const picked = (c, list) => list.find((q) => dist2(q, c) <= SAME);
-    const removed = [], pal = [];
-    for (const c of cand) {
-      const shown = snap(c.c);
-      if (picked(shown, choices.drop)) { const r0 = removed.find((q) => dist2(q.c, shown) <= SAME); if (r0) r0.n += c.n; else removed.push({ c: shown, n: c.n }); }
-      else { const keep = picked(shown, choices.keep); pal.push({ c: keep ? keep.slice() : c.c, n: c.n, pin: !!keep }); }
-    }
-    for (const k of choices.keep) if (!pal.some((p) => p.pin && dist2(p.c, k) === 0)) pal.push({ c: k.slice(), n: 1, pin: true });
-    // Fold y into x. A kept colour always wins and never moves.
-    const fold = (x, y) => {
-      const n = x.n + y.n;
-      if (y.pin && !x.pin) x.c = y.c.slice(); else if (!x.pin) x.c = x.c.map((v, k) => (v * x.n + y.c[k] * y.n) / n);
-      x.n = n; x.pin = x.pin || y.pin;
+    return {
+      palette: async (r, o, declared) => (await call({ op: 'palette', o, declared, w: r.w, h: r.h }, [r.data])).head,
+      async trace(r, o, p) {
+        const split = Math.min(lanes(), p.order.length);
+        if (split < 2) return (await call({ op: 'trace', o, p, w: r.w, h: r.h }, [r.data])).head;
+        // Quantize once, then trace the layers across the workers.
+        const [idx] = (await call({ op: 'index', o, p, w: r.w, h: r.h }, [r.data])).bufs;
+        const groups = Array.from({ length: split }, (_, g) => p.order.map((_, k) => k).filter((k) => k % split === g));
+        const parts = await Promise.all(groups.map((ks) => call({ op: 'layers', o, p, w: r.w, h: r.h, ks }, [idx])));
+        const paths = [];
+        groups.forEach((ks, g) => ks.forEach((k, i) => { paths[k] = parts[g].head.paths[i]; }));
+        const done = paths.filter(Boolean);
+        return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.w} ${r.h}" fill-rule="evenodd">${done.join('')}</svg>\n`, layers: done.length };
+      },
+      sourceIndex: async (r, o, p) => (await call({ op: 'sourceIndex', o, p, w: r.w, h: r.h }, [r.data])).bufs[0],
+      async compare(aIdx, a, b, o, p) {
+        const res = await call({ op: 'compare', o, p, w: a.w, h: a.h, bw: b.w, bh: b.h }, [aIdx, a.data, b.data]);
+        return { diffPct: res.head.diffPct, png: res.bufs[0] };
+      },
+      async quantize(r, o, p) {
+        const res = await call({ op: 'quantize', o, p, w: r.w, h: r.h }, [r.data]);
+        return { ...res.head, png: res.bufs[0], w: r.w, h: r.h };
+      },
     };
-    // Too many colours (a gradient, say): merge the closest pair until it fits.
-    // Small, distinct colours such as an eye survive because nothing is near them.
-    while (pal.length > maxCol) {
-      let bi = -1, bj = -1, best = Infinity;
-      for (let i = 0; i < pal.length; i++) for (let j = i + 1; j < pal.length; j++) {
-        if (pal[i].pin && pal[j].pin) continue;
-        const e = dist2(pal[i].c, pal[j].c) * Math.min(pal[i].n, pal[j].n);
-        if (e < best) { best = e; bi = i; bj = j; }
-      }
-      if (bi < 0) break;
-      fold(pal[bi], pal[bj]); pal.splice(bj, 1);
-    }
-    // A few rounds of k-means over the solid colours to settle each one on its cluster.
-    for (let it = 0; it < 4 && pal.length > 1; it++) {
-      const acc = pal.map(() => [0, 0, 0, 0]);
-      for (const b of all) {
-        let bi = 0, best = Infinity;
-        for (let i = 0; i < pal.length; i++) { const e = dist2(pal[i].c, b.c); if (e < best) { best = e; bi = i; } }
-        const t = acc[bi]; t[0] += b.c[0] * b.n; t[1] += b.c[1] * b.n; t[2] += b.c[2] * b.n; t[3] += b.n;
-      }
-      pal.forEach((p, i) => { const t = acc[i]; if (t[3]) { p.n = t[3]; if (!p.pin) p.c = [t[0] / t[3], t[1] / t[3], t[2] / t[3]]; } });
-    }
-    // k-means can walk two centres towards each other; fold any that ended up closer than the merge distance.
-    for (let again = true; again;) {
-      again = false;
-      for (let i = 0; i < pal.length && !again; i++) for (let j = i + 1; j < pal.length && !again; j++) {
-        if ((pal[i].pin && pal[j].pin) || dist2(pal[i].c, pal[j].c) > m2) continue;
-        fold(pal[i], pal[j]); pal.splice(j, 1); again = true;
-      }
-    }
-    const cols = pal.map((p) => p.pin ? p.c : snap(p.c));
-    // Candidates that no longer have a colour of their own were merged away.
-    const merged = [];
-    for (const c of cand) {
-      const shown = snap(c.c);
-      if (picked(shown, choices.drop) || cols.some((q) => dist2(q, shown) <= SAME)) continue;
-      const m0 = merged.find((q) => dist2(q.c, shown) <= SAME);
-      if (m0) m0.n += c.n; else merged.push({ c: shown, n: c.n });
-    }
-    return { cols, pinned: pal.map((p) => p.pin), merged, removed, cand: cand.map((c) => ({ c: snap(c.c), n: c.n })) };
-  }
+  })();
 
-  // Map every pixel to its nearest palette colour. The background colour becomes
-  // -1 only where it reaches the border, so the same white inside the artwork stays.
-  function classify(r, pal, bg, edges) {
-    const d = r.data, w = r.w, n = r.w * r.h, idx = new Int16Array(n), memo = new Map();
-    for (let j = 0, i = 0; j < n; j++, i += 4) {
-      if (d[i + 3] < 128) { idx[j] = -1; continue; }
-      const key = d[i] << 16 | d[i + 1] << 8 | d[i + 2];
-      let k = memo.get(key);
-      if (k === undefined) {
-        let best = Infinity; k = 0;
-        for (let p = 0; p < pal.length; p++) {
-          const e = (pal[p][0] - d[i]) ** 2 + (pal[p][1] - d[i + 1]) ** 2 + (pal[p][2] - d[i + 2]) ** 2;
-          if (e < best) { best = e; k = p; }
-        }
-        memo.set(key, k);
+  // The WebAssembly core in a pool of workers. Where workers aren't allowed it
+  // runs on this thread instead: slower, and the page pauses while it works.
+  function wasmPool() {
+    const bytes = Uint8Array.from(atob($('core-wasm').textContent.trim()), (c) => c.charCodeAt(0));
+    const module = WebAssembly.compile(bytes);
+    let local;
+    const onThisThread = (msg) => (local ||= module.then((m) => WebAssembly.instantiate(m)).then((i) => i.exports)).then((X) => slimWasmCall(X, msg));
+    const queue = [], idle = [], busy = new Map();
+    let starting = 0, ready = 0, nextId = 0;
+    const pump = () => {
+      while (idle.length && queue.length) {
+        const w = idle.pop(), job = queue.shift();
+        busy.set(w, job);
+        w.postMessage({ id: job.id, msg: job.msg }, [job.msg.buffer]);
       }
-      idx[j] = k;
-    }
-    if (edges) snapEdges(r, pal, idx);
-    if (bg >= 0) {
-      const q = new Int32Array(n); let head = 0, tail = 0;
-      const push = (j) => { if (idx[j] === bg) { idx[j] = -1; q[tail++] = j; } };
-      for (let x = 0; x < w; x++) { push(x); push(n - w + x); }
-      for (let y = 0; y < r.h; y++) { push(y * w); push(y * w + w - 1); }
-      while (head < tail) {
-        const j = q[head++], x = j % w;
-        if (x > 0) push(j - 1); if (x < w - 1) push(j + 1);
-        if (j >= w) push(j - w); if (j < n - w) push(j + w);
+      if (!starting && !ready) queue.splice(0).forEach((job) => onThisThread(job.msg).then(job.resolve, job.reject));
+    };
+    try {
+      const src = $('core-rt').textContent + `
+        let module, X;
+        const fresh = async () => { X = (await WebAssembly.instantiate(module)).exports; };
+        onmessage = async (e) => {
+          if (e.data.module) { module = e.data.module; await fresh(); postMessage({ ready: true }); return; }
+          const { id, msg } = e.data;
+          try { const res = slimWasmCall(X, msg); postMessage({ id, res }, [res.buffer]); }
+          catch (err) { postMessage({ id, error: (err && err.message) || String(err) }); await fresh(); return; }
+          // WebAssembly memory only grows. After a big job, start afresh so idle workers don't hold on to it.
+          if (X.memory.buffer.byteLength > 256 * 2 ** 20) await fresh();
+        };`;
+      const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      const size = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1));
+      for (let i = 0; i < size; i++) {
+        const w = new Worker(url);
+        let up = false;
+        starting++;
+        w.onmessage = (e) => {
+          if (e.data.ready) { up = true; starting--; ready++; idle.push(w); pump(); return; }
+          const job = busy.get(w); busy.delete(w); idle.push(w);
+          if (e.data.error) job.reject(new Error(e.data.error)); else job.resolve(e.data.res);
+          pump();
+        };
+        w.onerror = (e) => {
+          e.preventDefault();
+          if (up) ready--; else starting--;
+          const job = busy.get(w); busy.delete(w);
+          const at = idle.indexOf(w); if (at >= 0) idle.splice(at, 1);
+          w.terminate();
+          if (job) job.reject(new Error('The tracer stopped unexpectedly. Try a smaller trace size.'));
+          pump();
+        };
+        module.then((m) => w.postMessage({ module: m }));
       }
-    }
-    return idx;
-  }
-
-  // A blended pixel on an edge between two colours can sit nearer a third palette
-  // colour (dark blue + white blends to something close to a pale grey), which
-  // leaves a one-pixel fringe of that colour along the edge. So each pixel that
-  // isn't solid looks outwards in eight directions for the nearest solid pixels,
-  // and may only take one of the colours it finds there.
-  function snapEdges(r, pal, idx) {
-    const d = r.data, w = r.w, h = r.h, n = w * h;
-    const R = Math.max(2, Math.round(2 * Math.max(w, h) / 2048));
-    const solid = new Uint8Array(n);
-    // Compare across a step that grows with the image: an upscaled soft edge
-    // changes too little from one pixel to the next to be noticed otherwise.
-    const st = Math.max(1, Math.round(Math.max(w, h) / 2048));
-    const near = (i, k) => Math.abs(d[i] - d[k]) + Math.abs(d[i + 1] - d[k + 1]) + Math.abs(d[i + 2] - d[k + 2]) + Math.abs(d[i + 3] - d[k + 3]) < 24;
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const j = y * w + x, i = j * 4;
-      solid[j] = (x < st || near(i, i - 4 * st)) && (x >= w - st || near(i, i + 4 * st)) && (y < st || near(i, i - w * 4 * st)) && (y >= h - st || near(i, i + w * 4 * st)) ? 1 : 0;
-    }
-    const out = idx.slice(), cands = [];
-    const DX = [1, -1, 0, 0, 1, 1, -1, -1], DY = [0, 0, 1, -1, 1, -1, 1, -1];
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const j = y * w + x, own = idx[j];
-      if (solid[j] || own < 0) continue;
-      cands.length = 0;
-      for (let k = 0; k < 8; k++) for (let s = 1; s <= R; s++) {
-        const xx = x + DX[k] * s, yy = y + DY[k] * s;
-        if (xx < 0 || yy < 0 || xx >= w || yy >= h) break;
-        const q = yy * w + xx;
-        if (solid[q]) { const c = idx[q]; if (c >= 0 && !cands.includes(c)) cands.push(c); break; }
-      }
-      if (!cands.length || cands.includes(own)) continue;
-      const i = j * 4;
-      const e = (c) => (pal[c][0] - d[i]) ** 2 + (pal[c][1] - d[i + 1]) ** 2 + (pal[c][2] - d[i + 2]) ** 2;
-      if (e(own) <= 20 * 20) continue; // it really is that colour: a thin line, not a blend
-      let best = cands[0];
-      for (const c of cands) if (e(c) < e(best)) best = c;
-      out[j] = best;
-    }
-    idx.set(out);
-  }
-
-  // Every patch of one colour smaller than minArea takes the colour that surrounds
-  // it most. Status per pixel: 0 unseen, 1 settled small, 2 part of a big patch.
-  // A patch that grows past minArea, or touches a pixel already known to be in a
-  // big patch, stops early, so the work stays linear and memory stays small.
-  function removeSpecks(idx, w, h, minArea) {
-    if (minArea < 2) return idx;
-    const n = w * h, status = new Uint8Array(n), q = new Int32Array(minArea + 1), votes = new Map();
-    for (let j0 = 0; j0 < n; j0++) {
-      if (status[j0]) continue;
-      const c = idx[j0];
-      let head = 0, tail = 0, big = false;
-      q[tail++] = j0; status[j0] = 3;
-      grow: while (head < tail) {
-        const j = q[head++], x = j % w;
-        const nb = [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, j >= w ? j - w : -1, j < n - w ? j + w : -1];
-        for (const k of nb) {
-          if (k < 0 || idx[k] !== c) continue;
-          if (status[k] === 2) { big = true; break grow; }
-          if (status[k] === 0) { if (tail >= minArea) { big = true; break grow; } status[k] = 3; q[tail++] = k; }
-        }
-      }
-      if (big) { for (let t = 0; t < tail; t++) status[q[t]] = 2; continue; }
-      votes.clear();
-      for (let t = 0; t < tail; t++) {
-        const j = q[t], x = j % w;
-        for (const k of [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, j >= w ? j - w : -1, j < n - w ? j + w : -1])
-          if (k >= 0 && idx[k] !== c) votes.set(idx[k], (votes.get(idx[k]) || 0) + 1);
-      }
-      let to = c, most = 0;
-      for (const [v, m] of votes) if (m > most) { most = m; to = v; }
-      for (let t = 0; t < tail; t++) { idx[q[t]] = to; status[q[t]] = 1; }
-    }
-    return idx;
-  }
-  // Speck size is set at 2048 px across and scaled with the image's area.
-  const speckArea = (o, w, h) => Math.round(o.turd * (Math.max(w, h) / 2048) ** 2);
-
-  // Majority filter: each pixel takes the most common colour of its 3x3
-  // neighbourhood. Clears the speckle and ragged edges of noisy or upscaled images.
-  function cleanUp(idx, w, h, passes, nCol) {
-    const counts = new Int32Array(nCol + 1);
-    for (let p = 0; p < passes; p++) {
-      const out = new Int16Array(idx.length);
-      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        const j = y * w + x;
-        if (x === 0 || y === 0 || x === w - 1 || y === h - 1) { out[j] = idx[j]; continue; }
-        let best = idx[j], bn = 0;
-        for (let yy = -1; yy <= 1; yy++) for (let xx = -1; xx <= 1; xx++) {
-          const v = idx[j + yy * w + xx] + 1, c = ++counts[v];
-          if (c > bn || (c === bn && v - 1 === idx[j])) { bn = c; best = v - 1; }
-        }
-        for (let yy = -1; yy <= 1; yy++) for (let xx = -1; xx <= 1; xx++) counts[idx[j + yy * w + xx] + 1] = 0;
-        out[j] = best;
-      }
-      idx = out;
-    }
-    return idx;
-  }
-
-  function edgeColour(r, pal) {
-    const idx = classify(r, pal, -2), counts = new Map();
-    const add = (j) => { const k = idx[j]; if (k >= 0) counts.set(k, (counts.get(k) || 0) + 1); };
-    for (let x = 0; x < r.w; x++) { add(x); add((r.h - 1) * r.w + x); }
-    for (let y = 0; y < r.h; y++) { add(y * r.w); add(y * r.w + r.w - 1); }
-    let best = -1, n = 0;
-    for (const [k, c] of counts) if (c > n) { best = k; n = c; }
-    return n > (r.w + r.h) ? best : -1;
+    } catch { starting = ready = 0; }
+    return {
+      send: (msg) => new Promise((resolve, reject) => { queue.push({ id: nextId++, msg, resolve, reject }); pump(); }),
+      lanes: () => ready || 1,
+    };
   }
 
   // Palette, background and layer order for the current settings.
-  async function paletteFor(o) {
+  function paletteFor(o) {
     const k = `p${o.mode}${o.merge}${o.edgeBg}${o.thr}${o.maxCol}${o.edges}${JSON.stringify(o.choices)}`;
-    if (state.cache[k]) return state.cache[k];
-    let res;
-    if (o.mode === 'mono') {
-      const fill = state.source.kind === 'svg' ? (declaredColours(state.source.text)[0] || [0, 0, 0]) : [0, 0, 0];
-      res = { pal: [fill], bg: -1, order: [0], share: [1], pinned: [false], merged: [], removed: [] };
-    } else {
+    return cached(k, async () => {
+      if (o.mode === 'mono') {
+        const fill = state.source.kind === 'svg' ? (declaredColours(state.source.text)[0] || [0, 0, 0]) : [0, 0, 0];
+        return { pal: [fill], bg: -1, order: [0], share: [1], pinned: [false], merged: [], removed: [] };
+      }
       const r = await cachedRaster(state.source, CMP, false);
       const declared = state.source.kind === 'svg' ? declaredColours(state.source.text) : [];
-      const found = findPalette(r, o.merge, declared, o.maxCol, o.choices), pal = found.cols;
-      if (!pal.length) throw new Error('Every colour is left out. Click a faded colour in the palette to bring it back.');
-      const bg = o.edgeBg ? edgeColour(r, pal) : -1;
-      const idx = classify(r, pal, bg, o.edges), area = new Array(pal.length).fill(0);
-      for (const k of idx) if (k >= 0) area[k]++;
-      const order = pal.map((_, i) => i).filter((i) => area[i] > 0).sort((a, b) => area[b] - area[a]);
-      // Shares of the artwork. In-use colours are measured from the traced pixels;
-      // merged and removed ones from their solid pixels, so those are estimates.
-      const art = area.reduce((a, b) => a + b, 0) || 1;
-      const solid = found.cand.filter((c) => !(bg >= 0 && dist2(c.c, pal[bg]) <= SAME)).reduce((a, c) => a + c.n, 0) || 1;
-      const share = pal.map((_, i) => area[i] / art);
-      const est = (list) => list.map((m) => ({ c: m.c, share: m.n / solid }));
-      res = { pal, bg, order, share, pinned: found.pinned, merged: est(found.merged), removed: est(found.removed) };
-    }
-    return (state.cache[k] = res);
-  }
-
-  async function indexAt(source, N, o, p) {
-    if (o.mode === 'mono') return monoIndex(await raster(source, N, true), o.thr);
-    return classify(await raster(source, N, false), p.pal, p.bg, o.edges);
-  }
-
-  function potrace(dataUrl, o) {
-    return new Promise((res, rej) => {
-      if (!PotraceFactory) return rej(new Error("The tracing library didn't load. Check the connection and reload."));
-      // Hand the library its own <img> so we can wait for it to load. Its process()
-      // otherwise finds the image not yet decoded and sleeps 100 ms before trying again.
-      let img;
-      const P = PotraceFactory({ document: { createElement: (t) => { const e = document.createElement(t); if (t === 'img') img = e; return e; } } });
-      P.setParameter({ turnpolicy: 'minority', optcurve: true, turdsize: 2, alphamax: o.alpha, opttolerance: o.tol });
-      img.addEventListener('load', () => P.process(() => { try { res(P.getSVG(1)); } catch (e) { rej(e); } }), { once: true });
-      img.addEventListener('error', () => rej(new Error("The tracing library couldn't read a layer.")), { once: true });
-      P.loadImageFromUrl(dataUrl);
+      return core.palette(r, o, declared);
     });
   }
 
-  // Rewrite Potrace's absolute, three-decimal path as compact relative commands.
-  function compactPath(raw, dec) {
-    const d = (raw.match(/\sd="([^"]*)"/) || [])[1] || '';
-    const f = Math.pow(10, dec), r = (v) => Math.round(v * f) / f;
-    const num = (v) => { let s = String(r(v)); if (s === '-0') s = '0'; return s.replace(/^(-?)0\./, '$1.'); };
-    const toks = d.match(/[MCL]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
-    // `digit` says whether `out` ends in a number. Testing `out` itself instead
-    // makes V8 flatten the growing string on every call, which is quadratic.
-    let out = '', last = '', cx = 0, cy = 0, i = 0, open = false, digit = false;
-    const emit = (cmd, vals) => {
-      if (!(cmd === last && cmd !== 'M')) { out += cmd; digit = false; }
-      for (const v of vals) { const t = num(v); if (digit && t[0] !== '-') out += ' '; out += t; digit = true; }
-      last = cmd;
-    };
-    const n = () => parseFloat(toks[i++]);
-    while (i < toks.length) {
-      const t = toks[i++];
-      if (t === 'M') {
-        if (open) { out += 'z'; last = 'z'; digit = false; }
-        cx = r(n()); cy = r(n()); emit('M', [cx, cy]); open = true;
-      } else if (t === 'C') {
-        const p = [r(n()), r(n()), r(n()), r(n()), r(n()), r(n())];
-        const rel = p.map((v, k) => r(v - (k % 2 ? cy : cx)));
-        if (rel.some((v) => v !== 0)) emit('c', rel);
-        cx = p[4]; cy = p[5];
-      } else if (t === 'L') {
-        for (let k = 0; k < 2; k++) {
-          const x = r(n()), y = r(n()), dx = r(x - cx), dy = r(y - cy);
-          if (dx || dy) emit('l', [dx, dy]);
-          cx = x; cy = y;
-        }
-      }
-    }
-    if (open) out += 'z';
-    return out;
-  }
-
-  // Smoothing merges curve segments, which is invisible on a big sweeping edge
-  // and obvious on an eye or a letter. So trace twice and let every shape smaller
-  // than the "protect" size take the lightly smoothed version.
-  const subpaths = (raw) => ((raw.match(/\sd="([^"]*)"/) || [])[1] || '').split(/(?=M)/).filter((x) => x.trim());
-  function span(sub) {
-    const v = sub.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi).map(Number);
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (let i = 0; i + 1 < v.length; i += 2) { x0 = Math.min(x0, v[i]); x1 = Math.max(x1, v[i]); y0 = Math.min(y0, v[i + 1]); y1 = Math.max(y1, v[i + 1]); }
-    return Math.max(x1 - x0, y1 - y0);
-  }
-  async function traceLayer(url, o, long) {
-    const coarse = await potrace(url, o);
-    if (!o.protect || o.tol <= 0.15) return coarse;
-    const fine = await potrace(url, { ...o, tol: 0.1 });
-    const a = subpaths(coarse), b = subpaths(fine);
-    if (a.length !== b.length) return fine;
-    const limit = long * o.protect / 100;
-    return ` d="${a.map((sub, i) => span(b[i]) < limit ? b[i] : sub).join(' ')}"`;
-  }
-
-  async function traceOnce(o, progress) {
+  async function traceOnce(o) {
     const p = await paletteFor(o);
     const R = await cachedRaster(state.source, o.grid, o.mode === 'mono');
-    let idx = o.mode === 'mono' ? monoIndex(R, o.thr) : classify(R, p.pal, p.bg, o.edges);
-    if (o.clean) idx = cleanUp(idx, R.w, R.h, o.clean, p.pal.length);
-    idx = removeSpecks(idx, R.w, R.h, speckArea(o, R.w, R.h));
-    const rank = new Int16Array(p.pal.length).fill(-1);
-    p.order.forEach((ci, k) => { rank[ci] = k; });
-    const c = document.createElement('canvas'); c.width = R.w; c.height = R.h;
-    const ctx = c.getContext('2d'), img = ctx.createImageData(R.w, R.h), px = img.data;
-    const paths = [];
-    for (let k = 0; k < p.order.length; k++) {
-      if (progress) { progress(k, p.order.length); await tick(); }
-      // Stacked: each layer also covers every colour painted above it.
-      for (let j = 0, q = 0; j < idx.length; j++, q += 4) {
-        const on = idx[j] >= 0 && rank[idx[j]] >= k;
-        px[q] = px[q + 1] = px[q + 2] = on ? 0 : 255; px[q + 3] = 255;
-      }
-      ctx.putImageData(img, 0, 0);
-      const d = compactPath(await traceLayer(c.toDataURL('image/png'), o, Math.max(R.w, R.h)), o.dec);
-      if (!d) continue;
-      const hex = toHex(p.pal[p.order[k]]);
-      paths.push(`<path${hex === '#000000' ? '' : ` fill="${hex}"`} d="${d}"/>`);
-    }
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${R.w} ${R.h}" fill-rule="evenodd">${paths.join('')}</svg>\n`;
+    const { svg, layers } = await core.trace(R, o, p);
     const cmp = await compare(svg, o, p);
-    return { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers: paths.length, ...cmp, opts: o };
+    return { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers, ...cmp, opts: o };
   }
 
+  // Draw the result at CMP and compare it with the original, colour by colour.
   async function compare(svg, o, p) {
+    const mono = o.mode === 'mono';
+    const a = await cachedRaster(state.source, CMP, mono);
     const k = `c${o.mode}${o.merge}${o.edgeBg}${o.thr}${o.maxCol}${o.edges}${JSON.stringify(o.choices)}`;
-    const aIdx = state.cache[k] || (state.cache[k] = await indexAt(state.source, CMP, o, p));
-    const a = await cachedRaster(state.source, CMP, false);
-    const bR = await raster({ kind: 'svg', text: svg }, CMP, o.mode === 'mono');
-    const bIdx = o.mode === 'mono' ? monoIndex(bR, 128) : classify(bR, p.pal, p.bg, o.edges);
-    const w = Math.min(a.w, bR.w), h = Math.min(a.h, bR.h);
-    const c = document.createElement('canvas'); c.width = w; c.height = h;
-    const ctx = c.getContext('2d'), id = ctx.createImageData(w, h), px = id.data;
-    // A pixel only counts as changed if the other image has no pixel of the
-    // same colour within one pixel of it. Edges that moved by less than a
-    // hairline are invisible, and otherwise swamp the count on busy artwork.
-    const near = (idx, iw, x, y, v) => {
-      for (let yy = Math.max(0, y - 1); yy <= Math.min(h - 1, y + 1); yy++)
-        for (let xx = Math.max(0, x - 1); xx <= Math.min(w - 1, x + 1); xx++)
-          if (idx[yy * iw + xx] === v) return true;
-      return false;
-    };
-    // Blended edge pixels can land on a third palette colour by accident, so a
-    // change only counts where at least one image is solid colour. A lost
-    // detail or an added blob always leaves solid colour behind in one of them.
-    const aD = o.mode === 'mono' ? (await cachedRaster(state.source, CMP, true)).data : a.data, bD = bR.data;
-    const solid = (d, iw, x, y) => {
-      const i = (y * iw + x) * 4;
-      const same = (k) => Math.abs(d[i] - d[k]) + Math.abs(d[i + 1] - d[k + 1]) + Math.abs(d[i + 2] - d[k + 2]) + Math.abs(d[i + 3] - d[k + 3]) < 24;
-      return (x === 0 || same(i - 4)) && (x === w - 1 || same(i + 4)) && (y === 0 || same(i - iw * 4)) && (y === h - 1 || same(i + iw * 4));
-    };
-    let diff = 0, ink = 0;
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const ia = y * a.w + x, ib = y * bR.w + x, q = (y * w + x) * 4;
-      const va = aIdx[ia], vb = bIdx[ib];
-      if (va >= 0) ink++;
-      if (va !== vb && !(near(bIdx, bR.w, x, y, va) && near(aIdx, a.w, x, y, vb)) && (solid(aD, a.w, x, y) || solid(bD, bR.w, x, y))) { diff++; px[q] = 214; px[q + 1] = 40; px[q + 2] = 40; px[q + 3] = 255; }
-      else if (va >= 0) { px[q] = 20; px[q + 1] = 26; px[q + 2] = 34; px[q + 3] = 34; }
-    }
-    ctx.putImageData(id, 0, 0);
-    return { diffPct: ink ? (100 * diff / ink) : 0, diffUrl: c.toDataURL('image/png') };
+    const aIdx = await cached(k, () => core.sourceIndex(a, o, p));
+    const b = await raster({ kind: 'svg', text: svg }, CMP, mono);
+    const { diffPct, png } = await core.compare(aIdx, a, b, o, p);
+    return { diffPct, diffUrl: blobUrl(new Blob([png], { type: 'image/png' })) };
   }
 
-  // ---------- rendering ----------
   function showOriginal() {
     showOrigView();
     const cols = state.source.kind === 'svg' ? declaredColours(state.source.text).length : null;
@@ -845,62 +573,10 @@
 
   // ---------- quantized image ----------
   // The original reduced to the palette: the same pass the tracer starts from
-  // (nearest colour, background flood, clean-up), at any size.
+  // (nearest colour, background flood, clean-up), at any size, as an indexed PNG.
   async function quantize(N) {
     const o = opts(), p = await paletteFor(o);
-    const r = await raster(state.source, N, o.mode === 'mono');
-    let idx = o.mode === 'mono' ? monoIndex(r, o.thr) : classify(r, p.pal, p.bg, o.edges);
-    if (o.clean) idx = cleanUp(idx, r.w, r.h, o.clean, p.pal.length);
-    idx = removeSpecks(idx, r.w, r.h, speckArea(o, r.w, r.h));
-    return { w: r.w, h: r.h, idx, pal: p.pal };
-  }
-
-  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
-  function chunk(type, data) {
-    const out = new Uint8Array(12 + data.length), dv = new DataView(out.buffer);
-    dv.setUint32(0, data.length);
-    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
-    out.set(data, 8);
-    let c = 0xffffffff;
-    for (let i = 4; i < 8 + data.length; i++) c = CRC[(c ^ out[i]) & 255] ^ (c >>> 8);
-    dv.setUint32(8 + data.length, (c ^ 0xffffffff) >>> 0);
-    return out;
-  }
-  // An indexed (palette) PNG: one small number per pixel instead of four bytes,
-  // at 1, 2, 4 or 8 bits depending on how many colours are used.
-  async function indexedPng(q) {
-    const used = new Uint8Array(q.pal.length + 1);
-    for (const v of q.idx) used[v + 1] = 1;
-    const map = new Int16Array(q.pal.length + 1).fill(-1), entries = [];
-    if (used[0]) { map[0] = 0; entries.push(null); } // transparent first, so tRNS is one byte
-    for (let i = 0; i < q.pal.length; i++) if (used[i + 1]) { map[i + 1] = entries.length; entries.push(q.pal[i]); }
-    const n = entries.length, depth = n <= 2 ? 1 : n <= 4 ? 2 : n <= 16 ? 4 : 8;
-    const rowBytes = Math.ceil(q.w * depth / 8), raw = new Uint8Array((rowBytes + 1) * q.h);
-    for (let y = 0; y < q.h; y++) {
-      const o = y * (rowBytes + 1) + 1;
-      for (let x = 0; x < q.w; x++) {
-        const v = map[q.idx[y * q.w + x] + 1];
-        if (depth === 8) raw[o + x] = v;
-        else { const bit = x * depth; raw[o + (bit >> 3)] |= v << (8 - depth - (bit & 7)); }
-      }
-    }
-    const ihdr = new Uint8Array(13), dv = new DataView(ihdr.buffer);
-    dv.setUint32(0, q.w); dv.setUint32(4, q.h); ihdr[8] = depth; ihdr[9] = 3;
-    const plte = new Uint8Array(n * 3);
-    entries.forEach((c, i) => { if (c) plte.set(c, i * 3); });
-    const idat = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
-    const parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('PLTE', plte)];
-    if (entries[0] === null) parts.push(chunk('tRNS', new Uint8Array([0])));
-    parts.push(chunk('IDAT', idat), chunk('IEND', new Uint8Array(0)));
-    return { blob: new Blob(parts, { type: 'image/png' }), colours: entries.filter(Boolean).length, transparent: entries[0] === null };
-  }
-  // Fallback where CompressionStream is missing: an ordinary PNG with the same pixels.
-  function rgbaPng(q) {
-    const c = document.createElement('canvas'); c.width = q.w; c.height = q.h;
-    const ctx = c.getContext('2d'), id = ctx.createImageData(q.w, q.h), px = id.data;
-    for (let j = 0; j < q.idx.length; j++) { const v = q.idx[j]; if (v < 0) continue; const k = j * 4, col = q.pal[v]; px[k] = col[0]; px[k + 1] = col[1]; px[k + 2] = col[2]; px[k + 3] = 255; }
-    ctx.putImageData(id, 0, 0);
-    return c;
+    return core.quantize(await raster(state.source, N, o.mode === 'mono'), o, p);
   }
 
   let origView = 'orig';
@@ -908,7 +584,7 @@
     if (origView !== 'quant' || !state.source) return;
     try {
       const q = await quantize(1024);
-      $('imgA').src = rgbaPng(q).toDataURL('image/png'); $('imgA').alt = 'The original reduced to the palette colours';
+      $('imgA').src = blobUrl(new Blob([q.png], { type: 'image/png' })); $('imgA').alt = 'The original reduced to the palette colours';
     } catch (e) { status(e.message || String(e)); }
   }
   function showOrigView() {
@@ -979,7 +655,6 @@
 
   // ---------- pipeline ----------
   const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, choices: state.choices });
-  const layerMsg = (prefix) => (k, n) => status(n > 1 ? `${prefix}layer ${k + 1} of ${n}…` : `${prefix}…`);
 
   async function run() {
     if (!state.source) return;
@@ -987,7 +662,7 @@
     status('Tracing…'); await tick();
     try {
       await showPalette();
-      const res = await traceOnce(opts(), (k, n) => { if (id === state.run) layerMsg('Tracing ')(k, n); });
+      const res = await traceOnce(opts());
       if (id !== state.run) return;
       state.result = res; showResult(); status(''); $('traceBtn').classList.remove('primary');
     } catch (e) { if (id === state.run) status(e.message || String(e)); }
@@ -1021,22 +696,29 @@
     const btn = $('autoBtn'); btn.disabled = true;
     const id = ++state.run;
     const tries = [];
-    const plan = [[1024, 1.0], [1024, 0.5], [1024, 0.2], [2048, 1.0], [2048, 0.5], [2048, 0.2]];
-    const attempt = async (grid, tol, label) => {
-      tries.push(await traceOnce({ ...opts(), grid, tol }, (k, n) => status(`${label}${n > 1 ? `, layer ${k + 1} of ${n}` : ''}…`)));
-      return id === state.run;
+    // All at once: the core spreads them over the workers, or over the cores natively.
+    const attempt = (plan) => {
+      let done = 0;
+      status(`Trying ${plan.length} settings…`);
+      return Promise.all(plan.map(async ([grid, tol]) => {
+        tries.push(await traceOnce({ ...opts(), grid, tol }));
+        if (id === state.run) status(`Trying ${plan.length} settings: ${++done} done…`);
+      }));
     };
     try {
-      for (let k = 0; k < plan.length; k++)
-        if (!await attempt(plan[k][0], plan[k][1], `Trying ${k + 1} of ${plan.length}: grid ${plan[k][0]}, smoothing ${plan[k][1]}`)) return;
-      if (!tries.some((t) => t.diffPct <= target))
-        for (const tol of [0.5, 0.2]) if (!await attempt(4096, tol, `Trying grid 4096, smoothing ${tol}`)) return;
+      await paletteFor(opts());
+      await attempt([[1024, 1.0], [1024, 0.5], [1024, 0.2], [2048, 1.0], [2048, 0.5], [2048, 0.2]]);
+      if (id !== state.run) return;
+      if (!tries.some((t) => t.diffPct <= target)) {
+        await attempt([[4096, 0.5], [4096, 0.2]]);
+        if (id !== state.run) return;
+      }
       const ok = tries.filter((t) => t.diffPct <= target).sort((a, b) => a.bytes - b.bytes);
       const pick = ok[0] || tries.slice().sort((a, b) => a.diffPct - b.diffPct)[0];
       state.grid = pick.opts.grid; state.tol = pick.opts.tol; syncControls();
       state.result = pick; showResult();
       status(ok.length ? `Smallest within ${target}%: grid ${pick.opts.grid}, smoothing ${pick.opts.tol}.` : `Nothing got within ${target}%. Showing the closest match. Try allowing a bigger difference.`);
-    } catch (e) { status(e.message || String(e)); }
+    } catch (e) { if (id === state.run) status(e.message || String(e)); }
     finally { btn.disabled = false; }
   }
 
@@ -1101,6 +783,7 @@
   }
   segClicks('gridSeg', 'grid', true); segClicks('decSeg', 'dec', true); segClicks('colourSeg', 'mode', false);
   const rgb = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+  const SAME = 24 * 24; // how close a colour must be to count as one the viewer picked
   const without = (list, c) => list.filter((q) => dist2(q, c) > SAME);
   $('swatches').addEventListener('click', (e) => {
     const b = e.target.closest('.sw'); if (!b) return;
@@ -1202,12 +885,9 @@
     try {
       status(`Quantizing at ${N} px…`); await tick();
       const q = await quantize(N);
-      let blob, colours;
-      if (typeof CompressionStream === 'function') ({ blob, colours } = await indexedPng(q));
-      else { blob = await new Promise((res) => rgbaPng(q).toBlob(res, 'image/png')); colours = q.pal.length; }
-      if (!blob) throw new Error('That size is too big for this browser. Pick a smaller one.');
-      await saveFile(`${state.name}-${colours}-colours.png`, blob);
-      status(`Saved: ${q.w} × ${q.h}, ${colours} colours, ${fmtBytes(blob.size)}.`);
+      const blob = new Blob([q.png], { type: 'image/png' });
+      await saveFile(`${state.name}-${q.colours}-colours.png`, blob);
+      status(`Saved: ${q.w} × ${q.h}, ${q.colours} colours, ${fmtBytes(blob.size)}.`);
     } catch (e) {
       if (e && e.code === 'declined') status('Download cancelled.');
       else if (e && e.code === 'rate_limited') status('A save is already waiting for an answer.');

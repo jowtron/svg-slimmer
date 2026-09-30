@@ -11,3 +11,9 @@ license = "GPL-2.0-or-later"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# The WebAssembly build favours small size: it is inlined into the page.
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+panic = "abort"

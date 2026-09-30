@@ -7,11 +7,13 @@ license.workspace = true
 
 [features]
 parallel = ["dep:rayon"]
+api = ["dep:serde_json"]
 
 [dependencies]
 miniz_oxide = "0.8"
 rayon = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }

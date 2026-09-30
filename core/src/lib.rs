@@ -8,6 +8,8 @@
 //! The pipeline is a port of the JavaScript the web app ran before, and keeps
 //! its arithmetic, including JS rounding rules, so both give the same output.
 
+#[cfg(feature = "api")]
+pub mod api;
 pub mod compare;
 pub mod index;
 pub mod palette;

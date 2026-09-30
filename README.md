@@ -1,6 +1,6 @@
 # SVG Slimmer
 
-Re-trace logos and icons as compact SVGs, colour by colour, or quantize them to small indexed PNGs. It runs entirely in the browser: nothing is uploaded.
+Re-trace logos and icons as compact SVGs, colour by colour, or quantize them to small indexed PNGs. It runs entirely on your own machine, in the browser or as a desktop app: nothing is uploaded.
 
 **Use it:** https://svg-slimmer.jderrick.app
 
@@ -29,16 +29,40 @@ It works best on flat artwork: logos, icons and illustrations with a handful of 
 
 ## Develop and deploy
 
-It's a single file, `index.html`, with no dependencies to install. `build.mjs` wraps it into a full HTML document in `dist/`, and it's served as static assets from a Cloudflare Worker.
+The pipeline (palette, quantize, trace, compare) is Rust, in `core/`, and runs in three places:
+
+- **The web app** (`index.html`) runs it as WebAssembly in a pool of Web Workers, one request per worker, so "Find smallest" tries its settings in parallel and multi-colour logos trace their layers in parallel. Where workers aren't allowed it runs on the page's own thread.
+- **The command line**: `svg-slim` in `cli/`.
+- **The desktop app** in `app/`, which shows the same page and runs the core natively.
+
+The page draws images with the browser's canvas and hands the core RGBA pixels, so an SVG looks exactly as it does in a browser. Requests and replies are single binary messages, described in `core/src/api.rs`; `web/core-rt.js` packs them.
 
 ```sh
-npm run build     # writes dist/index.html
+npm run build     # compiles the core to WebAssembly, then writes dist/index.html with it inlined
 npm run dev       # build, then serve locally with wrangler
 npm run deploy    # build, then deploy to Cloudflare (needs wrangler login or CLOUDFLARE_API_TOKEN)
 ```
 
-You can also open `dist/index.html` straight from disk.
+Building needs Rust with the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`). `dist/index.html` is a single file and also works opened straight from disk.
+
+### Command line
+
+```sh
+cargo install --path cli
+svg-slim logo.png                       # writes logo.slim.svg with the Balanced preset
+svg-slim logo.svg --preset fine -o out.svg
+svg-slim logo.png --smallest --target 0.5 --png logo-quantized.png
+svg-slim --help
+```
+
+### Checking the port
+
+The Rust pipeline started as a port of the JavaScript this app used to run, and keeps its arithmetic, JS rounding rules included, so it gives byte-identical SVGs from the same pixels. `core/examples/parity.rs` checks that against reference data dumped from the JS version: raw pixels, palette, index maps, SVG and difference score for each case.
+
+```sh
+cargo run --release -p slimmer-core --example parity -- <case dir>...
+```
 
 ## Credits
 
-Tracing by [Potrace](https://potrace.sourceforge.net/) by Peter Selinger, using the JavaScript port by kilobtye, loaded from the [`potrace-browser`](https://www.npmjs.com/package/potrace-browser) package on jsDelivr. Potrace is licensed under the GPL.
+Tracing by [Potrace](https://potrace.sourceforge.net/) by Peter Selinger, ported to Rust (`core/src/potrace.rs`) from kilobtye's JavaScript port, the [`potrace-browser`](https://www.npmjs.com/package/potrace-browser) package. Potrace is licensed under the GPL, and so is this project.
