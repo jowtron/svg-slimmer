@@ -7,3 +7,7 @@ license.workspace = true
 
 [dependencies]
 slimmer-core = { path = "../core", features = ["parallel"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+rayon = "1"
+resvg = "0.48"
+svgtypes = "0.16"
