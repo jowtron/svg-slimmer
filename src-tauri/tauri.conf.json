@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SVG Slimmer",
+  "version": "0.1.0",
+  "identifier": "app.jderrick.svgslimmer",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run build",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SVG Slimmer",
+        "width": 1320,
+        "height": 900,
+        "minWidth": 720,
+        "minHeight": 560,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "public.app-category.graphics-design",
+    "shortDescription": "Re-trace logos as compact colour SVGs",
+    "copyright": "Potrace © Peter Selinger. GPL.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  }
+}

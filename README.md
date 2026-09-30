@@ -33,7 +33,7 @@ The pipeline (palette, quantize, trace, compare) is Rust, in `core/`, and runs i
 
 - **The web app** (`index.html`) runs it as WebAssembly in a pool of Web Workers, one request per worker, so "Find smallest" tries its settings in parallel and multi-colour logos trace their layers in parallel. Where workers aren't allowed it runs on the page's own thread.
 - **The command line**: `svg-slim` in `cli/`.
-- **The desktop app** in `app/`, which shows the same page and runs the core natively.
+- **The desktop app** in `src-tauri/` (Tauri), which shows the same page in the system's web view and runs the core natively, on every core. It saves through the system's Save dialog.
 
 The page draws images with the browser's canvas and hands the core RGBA pixels, so an SVG looks exactly as it does in a browser. Requests and replies are single binary messages, described in `core/src/api.rs`; `web/core-rt.js` packs them.
 
@@ -54,6 +54,16 @@ svg-slim logo.svg --preset fine -o out.svg
 svg-slim logo.png --smallest --target 0.5 --png logo-quantized.png
 svg-slim --help
 ```
+
+### Desktop app
+
+```sh
+cargo install tauri-cli --version "^2"   # once
+cargo tauri dev                          # build the page, then run the app
+cargo tauri build                        # SVG Slimmer.app and a .dmg in target/release/bundle/
+```
+
+`SLIMMER_SELFTEST=logo.png target/release/svg-slimmer-app` drops the image on the page, runs a trace, Find smallest and the Finest preset through the real UI, prints the timings and each native request, and quits.
 
 ### Checking the port
 

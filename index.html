@@ -857,6 +857,14 @@
   }
   async function saveFile(filename, data) {
     if (downloads) return downloads.save({ filename, data });
+    const tauri = window.__TAURI_INTERNALS__;
+    if (tauri) {
+      // The desktop app saves through the system's Save dialog.
+      const bytes = new Uint8Array(await new Blob([data]).arrayBuffer());
+      const r = await tauri.invoke('save', bytes, { headers: { 'x-name': encodeURIComponent(filename) } });
+      if (r === 'cancelled') throw Object.assign(new Error('Save cancelled.'), { code: 'declined' });
+      return { status: 'saved' };
+    }
     if (inClaude) throw Object.assign(new Error('Downloads are unavailable here.'), { code: 'unavailable' });
     const blob = data instanceof Blob ? data : new Blob([data], { type: /\.svg$/.test(filename) ? 'image/svg+xml' : 'application/octet-stream' });
     const a = document.createElement('a');

@@ -1,0 +1,15 @@
+[package]
+name = "svg-slimmer-app"
+description = "SVG Slimmer as a desktop app: the web app's page, with the core running natively"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+slimmer-core = { path = "../core", features = ["api", "parallel"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+percent-encoding = "2"
