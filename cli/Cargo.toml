@@ -1,0 +1,9 @@
+[package]
+name = "svg-slim"
+description = "SVG Slimmer on the command line"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+slimmer-core = { path = "../core", features = ["parallel"] }
