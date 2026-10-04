@@ -69,6 +69,8 @@
   .auto-row input{width:4.2em;font:500 .85rem var(--mono);padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
 
   .results{display:grid;gap:14px;min-width:0}
+  /* Keep the sizes and images in view while scrolling a long settings column. */
+  @media (min-width:861px){.results{position:sticky;top:16px}}
   .summary{padding:14px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px}
   .big{font-family:var(--mono);font-size:1.25rem;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap}
   .big .arrow{color:var(--muted);padding-inline:.25em}
