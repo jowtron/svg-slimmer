@@ -172,14 +172,15 @@
         </div>
       </div>
 
-      <div class="field colour-only redraw-only">
+      <div class="field colour-only">
         <div class="field-head"><span class="label">Palette</span><span class="val" id="palCount"></span></div>
         <ul class="swatches" id="swatches" aria-label="Colours, bottom layer first"></ul>
         <p class="hint">Percentages are each colour's share of the artwork, background left out. Click a colour once to lock it in, so it stays however far you reduce <em>Most colours</em>. Click again to leave it out, and its pixels go to the nearest colour left; a third click hands it back. Faded colours were merged away: click one to bring it back, locked. <button type="button" class="linkish" id="palReset" hidden>Reset colours</button></p>
-        <p class="hint">Traced as stacked layers, bottom first. Each layer runs under the ones above it, so no gaps open between colours.</p>
+        <p class="hint redraw-only">Traced as stacked layers, bottom first. Each layer runs under the ones above it, so no gaps open between colours.</p>
+        <p class="hint tidy-only">With <em>Tidy</em> these are the SVG's own colours, biggest first. Each one kept is a real colour from the file; a colour merged or left out takes the nearest kept one.</p>
       </div>
 
-      <div class="field colour-only redraw-only">
+      <div class="field colour-only">
         <div class="field-head"><label for="maxCol">Most colours</label><span class="val" id="maxColV">24</span></div>
         <input id="maxCol" type="range" min="2" max="24" step="1" value="24">
         <p class="hint">For photos, gradients and AI images. The closest colours merge until this many are left; small distinct ones, like an eye, are kept.</p>
@@ -188,7 +189,7 @@
       <div class="field colour-only">
         <div class="field-head"><label for="merge">Merge similar colours</label><span class="val" id="mergeV">16</span></div>
         <input id="merge" type="range" min="0" max="80" step="2" value="16">
-        <p class="hint">Colours closer than this are traced as one, or with <em>Tidy</em>, drawn as one. Fewer colours make a smaller file.</p>
+        <p class="hint">Colours closer than this are treated as one. It's a distance between colours, where black to white is 441: around 16 merges shades you can't tell apart, 80 merges clearly different ones, such as cream into white. Fewer colours make a smaller file.</p>
       </div>
 
       <div class="field colour-only">
@@ -576,8 +577,10 @@
     o = { ...o, mode: 'colour' };
     const t = await core.tidy(state.source.text, o);
     if (t.unsupported) throw new Error(`Tidy can't keep this SVG's outlines: ${t.unsupported}. Use Redraw.`);
-    const p = await paletteFor(o);
-    const cmp = await compare(t.svg, o, p);
+    // Compare against a palette that ignores the colour choices, so a colour
+    // merged or left out counts as a change rather than being hidden.
+    const c = { ...o, choices: { keep: [], drop: [] }, maxCol: 24, merge: Math.min(o.merge, 16) };
+    const cmp = await compare(t.svg, c, await paletteFor(c));
     return { svg: t.svg, bytes: new Blob([t.svg]).size, points: countPoints(t.svg), layers: t.pathsOut, tidy: t, ...cmp, opts: o };
   }
 
@@ -624,9 +627,12 @@
   $('origSeg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; origView = b.dataset.v; showOrigView(); });
 
   async function showPalette() {
-    if (state.mode !== 'colour' || !state.source) { showQuantPreview(); return; }
+    const tidy = state.method === 'tidy';
+    if ((state.mode !== 'colour' && !tidy) || !state.source) { showQuantPreview(); return; }
     try {
-      const p = await paletteFor(opts());
+      // Tidy's colours are the SVG's own; they come back with the result.
+      const p = tidy ? state.result && state.result.tidy && state.result.tidy.palette : await paletteFor(opts());
+      if (!p) return;
       const pct = (v, approx) => { const x = 100 * v; return (approx ? '≈' : '') + (x >= 10 ? x.toFixed(0) : x >= 0.1 ? x.toFixed(1) : '<0.1') + '%'; };
       const chip = (c, kind, share) => {
         const h = toHex(c), sh = pct(share, kind === 'merged' || kind === 'removed');
@@ -696,6 +702,7 @@
       const res = await traceOnce(opts());
       if (id !== state.run) return;
       state.result = res; showResult(); status(''); $('traceBtn').classList.remove('primary');
+      if (state.method === 'tidy') showPalette();
       if (state.method === 'redraw') suggestTidy(res, id);
     } catch (e) { if (id === state.run) status(e.message || String(e)); }
   }
@@ -833,10 +840,10 @@
     // Tidy draws in colour and ignores the redraw settings.
     const tidy = state.method === 'tidy', svg = state.source && state.source.kind === 'svg';
     const mode = tidy ? 'colour' : state.mode;
-    document.querySelectorAll('.colour-only,.mono-only,.redraw-only,.svg-only').forEach((el) => {
+    document.querySelectorAll('.colour-only,.mono-only,.redraw-only,.tidy-only,.svg-only').forEach((el) => {
       const c = el.classList;
       el.hidden = (c.contains('colour-only') && mode !== 'colour') || (c.contains('mono-only') && mode !== 'mono') ||
-        (c.contains('redraw-only') && tidy) || (c.contains('svg-only') && !svg);
+        (c.contains('redraw-only') && tidy) || (c.contains('tidy-only') && !tidy) || (c.contains('svg-only') && !svg);
     });
     $('methodSeg').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === state.method)));
     const tidyBtn = $('methodSeg').querySelector('[data-v="tidy"]');

@@ -13,7 +13,7 @@
 //! - `sourceIndex` {o, p}             [original at CMP]      → [index map]
 //! - `compare`     {o, p, bw, bh}     [original's index map, original, result] → {diffPct} [diff PNG]
 //! - `quantize`    {o, p}             [original at any size] → {colours, transparent} [PNG]
-//! - `tidy`        {o, text}          []                     → {svg, pathsIn, pathsOut, coloursIn, coloursOut, background}
+//! - `tidy`        {o, text}          []                     → {svg, pathsIn, pathsOut, coloursIn, coloursOut, background, palette}
 //!                                                             or {unsupported: reason}
 //!
 //! Errors come back as {error}.
@@ -139,7 +139,7 @@ fn run(msg: &[u8]) -> Result<Vec<u8>, String> {
         }
         "tidy" => match tidy::tidy(&head.text, o) {
             Ok(t) => encode(
-                &json!({ "svg": t.svg, "pathsIn": t.paths_in, "pathsOut": t.paths_out, "coloursIn": t.colours_in, "coloursOut": t.colours_out, "background": t.background }),
+                &json!({ "svg": t.svg, "pathsIn": t.paths_in, "pathsOut": t.paths_out, "coloursIn": t.colours_in, "coloursOut": t.colours_out, "background": t.background, "palette": t.palette }),
                 &[],
             ),
             Err(reason) => encode(&json!({ "unsupported": reason }), &[]),
