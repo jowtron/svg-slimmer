@@ -191,7 +191,7 @@
         <p class="hint">Colours closer than this are traced as one, or with <em>Tidy</em>, drawn as one. Fewer colours make a smaller file.</p>
       </div>
 
-      <div class="field colour-only redraw-only">
+      <div class="field colour-only">
         <label class="check"><input id="edgeBg" type="checkbox"> Remove the background</label>
         <p class="hint">Leaves out the colour around the artwork, such as a PNG's white background. The same colour inside the artwork, like white in an eye, is kept.</p>
       </div>
@@ -654,7 +654,7 @@
     pill.className = `pill ${cls}`; pill.textContent = `${txt} · ${dp.toFixed(2)}% of pixels differ`; pill.hidden = false;
     $('footB').innerHTML = `<span><b>${fmtBytes(r.bytes)}</b></span><span>≈ <b>${r.points.toLocaleString()}</b> points</span>` +
       (r.tidy
-        ? `<span><b>${r.tidy.pathsIn.toLocaleString()}</b> → <b>${r.tidy.pathsOut.toLocaleString()}</b> paths</span><span><b>${r.tidy.coloursIn}</b> → <b>${r.tidy.coloursOut}</b> colours</span><span>tidy · merge <b>${r.opts.merge}</b></span>`
+        ? `<span><b>${r.tidy.pathsIn.toLocaleString()}</b> → <b>${r.tidy.pathsOut.toLocaleString()}</b> paths</span><span><b>${r.tidy.coloursIn}</b> → <b>${r.tidy.coloursOut}</b> colours</span>${r.tidy.background ? `<span>background left out</span>` : ''}<span>tidy · merge <b>${r.opts.merge}</b></span>`
         : (r.opts.mode === 'colour' ? `<span><b>${r.layers}</b> layer${r.layers === 1 ? '' : 's'}</span>` : '') +
           `<span>grid <b>${r.opts.grid}</b> · ${r.opts.alpha === 0 ? 'straight lines' : `smoothing <b>${r.opts.tol}</b>`}</span>`);
     $('code').value = r.svg;

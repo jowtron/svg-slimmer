@@ -6,6 +6,8 @@
 //! Tidy keeps every outline as drawn and
 //!
 //! - snaps colours closer than `o.merge` to the most used of them,
+//! - with `o.edge_bg`, leaves out the background: shapes of the background
+//!   colour that touch the canvas edge (white inside the artwork stays),
 //! - joins paths of one colour into a single element wherever that cannot change
 //!   what is painted over what,
 //! - rewrites the path data compactly: relative or absolute, whichever is
@@ -30,6 +32,8 @@ pub struct Tidied {
     /// Distinct fills read, and left after snapping.
     pub colours_in: usize,
     pub colours_out: usize,
+    /// Background shapes left out.
+    pub background: usize,
 }
 
 /// One path command in absolute coordinates, in thousandths of a unit, so the
@@ -340,6 +344,8 @@ fn read_path(d: &str, p: &Paint) -> Result<(Vec<Cmd>, Bbox), String> {
 struct Root {
     attrs: Vec<(String, String)>,
     long_side: f64,
+    /// The canvas, in thousandths.
+    canvas: Bbox,
 }
 
 fn read(text: &str) -> Result<(Root, Vec<Shape>), String> {
@@ -367,7 +373,9 @@ fn read(text: &str) -> Result<(Root, Vec<Shape>), String> {
                 let get = |k: &str| t.attrs.iter().find(|a| a.0 == k).map(|a| a.1);
                 let vb: Vec<f64> = get("viewBox").map(|v| v.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect()).unwrap_or_default();
                 let len = |k: &str| get(k).filter(|v| !v.ends_with('%')).and_then(|v| v.trim_end_matches("px").parse::<f64>().ok());
-                let long_side = if vb.len() == 4 { vb[2].max(vb[3]) } else { len("width").unwrap_or(300.0).max(len("height").unwrap_or(150.0)) };
+                let (cx, cy, cw, ch) = if vb.len() == 4 { (vb[0], vb[1], vb[2], vb[3]) } else { (0.0, 0.0, len("width").unwrap_or(300.0), len("height").unwrap_or(150.0)) };
+                let long_side = cw.max(ch);
+                let canvas = Bbox { x0: units(cx), y0: units(cy), x1: units(cx + cw), y1: units(cy + ch) };
                 let mut attrs = Vec::new();
                 if vb.len() == 4 {
                     attrs.push(("viewBox".to_string(), get("viewBox").unwrap().to_string()));
@@ -381,7 +389,7 @@ fn read(text: &str) -> Result<(Root, Vec<Shape>), String> {
                 if let Some(v) = get("preserveAspectRatio") {
                     attrs.push(("preserveAspectRatio".to_string(), v.to_string()));
                 }
-                root = Some(Root { attrs, long_side });
+                root = Some(Root { attrs, long_side, canvas });
                 stack.push(p);
                 if t.empty {
                     break;
@@ -455,6 +463,32 @@ fn snap_colours(shapes: &mut [Shape], merge: f64) -> (usize, usize) {
         s.fill = to[&s.fill];
     }
     (colours_in, reps.len())
+}
+
+/// Leave out the background: the colour of a bottom shape that covers the
+/// canvas or, failing that, the colour with the most area along the edges.
+/// Only its shapes that touch an edge go, so the same colour inside the
+/// artwork, such as the white of an eye, stays. Returns how many went.
+fn remove_background(shapes: &mut Vec<Shape>, canvas: &Bbox) -> usize {
+    let slack = ((canvas.x1 - canvas.x0).max(canvas.y1 - canvas.y0) / 1000).max(1);
+    let edge = |b: &Bbox| b.x0 <= canvas.x0 + slack || b.y0 <= canvas.y0 + slack || b.x1 >= canvas.x1 - slack || b.y1 >= canvas.y1 - slack;
+    let covers = |b: &Bbox| b.x0 <= canvas.x0 + slack && b.y0 <= canvas.y0 + slack && b.x1 >= canvas.x1 - slack && b.y1 >= canvas.y1 - slack;
+    let bg = match shapes.first().filter(|s| covers(&s.bbox)) {
+        Some(s) => s.fill,
+        None => {
+            let mut area: HashMap<[u8; 4], f64> = HashMap::new();
+            for s in shapes.iter().filter(|s| edge(&s.bbox)) {
+                *area.entry(s.fill).or_default() += s.bbox.area();
+            }
+            match area.into_iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(b.0.cmp(&a.0))) {
+                Some((c, _)) => c,
+                None => return 0,
+            }
+        }
+    };
+    let before = shapes.len();
+    shapes.retain(|s| !(s.fill == bg && edge(&s.bbox)));
+    before - shapes.len()
 }
 
 struct Group {
@@ -673,6 +707,10 @@ pub fn tidy(text: &str, o: &Opts) -> Result<Tidied, String> {
     let (root, mut shapes) = read(text)?;
     let paths_in = shapes.len();
     let (colours_in, colours_out) = snap_colours(&mut shapes, o.merge);
+    let background = if o.edge_bg { remove_background(&mut shapes, &root.canvas) } else { 0 };
+    if shapes.is_empty() {
+        return Err("nothing is left once the background is removed".into());
+    }
     let groups = group(shapes);
     let dec = decimals(root.long_side);
     let all_evenodd = groups.iter().all(|g| g.evenodd);
@@ -698,7 +736,7 @@ pub fn tidy(text: &str, o: &Opts) -> Result<Tidied, String> {
         svg.push_str(&format!(" d=\"{}\"/>", path_data(&g.cmds, dec)));
     }
     svg.push_str("</svg>\n");
-    Ok(Tidied { svg, paths_in, paths_out: groups.len(), colours_in, colours_out })
+    Ok(Tidied { svg, paths_in, paths_out: groups.len(), colours_in, colours_out, background })
 }
 
 #[cfg(test)]
@@ -731,6 +769,16 @@ mod tests {
         // Red over black over red: the second red overlaps the black, so it can't join the first.
         let svg = r##"<svg viewBox="0 0 10 10"><path fill="red" d="M0 0h4v4H0z"/><path d="M2 2h4v4H2z"/><path fill="red" d="M3 3h4v4H3z"/></svg>"##;
         assert_eq!(tidy(svg, &Opts::default()).unwrap().paths_out, 3);
+    }
+
+    #[test]
+    fn removes_edge_background_only() {
+        // White canvas, black shape, white eye inside it, white blob on the edge.
+        let svg = r##"<svg viewBox="0 0 100 100"><path fill="#fff" d="M0 0h100v100H0z"/><path d="M20 20h40v40H20z"/>
+            <path fill="#fff" d="M30 30h5v5h-5z"/><path fill="#fefefe" d="M90 0h10v10H90z"/></svg>"##;
+        let t = tidy(svg, &Opts { edge_bg: true, ..Opts::default() }).unwrap();
+        assert_eq!(t.background, 2);
+        assert!(t.svg.contains(r##"<path fill="#fff" d="M30 30h5v5h-5z"/>"##), "{}", t.svg);
     }
 
     #[test]
