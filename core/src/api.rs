@@ -13,6 +13,8 @@
 //! - `sourceIndex` {o, p}             [original at CMP]      → [index map]
 //! - `compare`     {o, p, bw, bh}     [original's index map, original, result] → {diffPct} [diff PNG]
 //! - `quantize`    {o, p}             [original at any size] → {colours, transparent} [PNG]
+//! - `tidy`        {o, text}          []                     → {svg, pathsIn, pathsOut, coloursIn, coloursOut}
+//!                                                             or {unsupported: reason}
 //!
 //! Errors come back as {error}.
 
@@ -20,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::palette::Pal;
-use crate::{compare, index, palette, png, trace, Image, Opts, Rgb};
+use crate::{compare, index, palette, png, tidy, trace, Image, Opts, Rgb};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +44,8 @@ struct Header {
     bh: usize,
     #[serde(default)]
     ks: Vec<usize>,
+    #[serde(default)]
+    text: String,
 }
 
 pub fn encode(head: &Value, bufs: &[&[u8]]) -> Vec<u8> {
@@ -133,6 +137,13 @@ fn run(msg: &[u8]) -> Result<Vec<u8>, String> {
             let q = png::indexed(&idx, head.w, head.h, &p.pal);
             encode(&json!({ "colours": q.colours, "transparent": q.transparent }), &[&q.png])
         }
+        "tidy" => match tidy::tidy(&head.text, o) {
+            Ok(t) => encode(
+                &json!({ "svg": t.svg, "pathsIn": t.paths_in, "pathsOut": t.paths_out, "coloursIn": t.colours_in, "coloursOut": t.colours_out }),
+                &[],
+            ),
+            Err(reason) => encode(&json!({ "unsupported": reason }), &[]),
+        },
         other => return Err(format!("Unknown request {other}.")),
     })
 }

@@ -51,6 +51,7 @@
   .seg button{font:500 .85rem var(--mono);padding:7px 4px;border:0;background:var(--panel);color:var(--ink);cursor:pointer;font-variant-numeric:tabular-nums}
   .seg button+button{border-left:1px solid var(--line)}
   .seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+  .seg button:disabled{opacity:.45;cursor:not-allowed}
   .seg button:focus-visible,.btn:focus-visible,.drop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
   .drop{display:grid;gap:4px;justify-items:center;text-align:center;padding:16px 12px;border:1.5px dashed var(--line);border-radius:8px;cursor:pointer;background:var(--mat)}
@@ -130,7 +131,7 @@
 <div class="shell">
   <header>
     <h1>SVG Slimmer</h1>
-    <p>Traces a logo or icon, SVG or bitmap, as smooth curves, colour by colour, then checks the result against the original pixel by pixel so you can see what, if anything, was lost.</p>
+    <p>Traces a logo or icon, SVG or bitmap, as smooth curves, colour by colour, or tidies an SVG that's already well traced, then checks the result against the original pixel by pixel so you can see what, if anything, was lost.</p>
   </header>
 
   <div class="layout">
@@ -144,7 +145,16 @@
         <div class="file-name" id="fileName"></div>
       </div>
 
-      <div class="field">
+      <div class="field svg-only" hidden>
+        <div class="field-head"><span class="label" id="methodLabel">Method</span><span class="term" id="methodNote"></span></div>
+        <div class="seg" role="group" aria-labelledby="methodLabel" id="methodSeg">
+          <button type="button" data-v="redraw" aria-pressed="true">Redraw</button>
+          <button type="button" data-v="tidy">Tidy</button>
+        </div>
+        <p class="hint"><em>Redraw</em> traces the artwork again as long smooth curves: best for bloated exports and traces made of thousands of tiny segments. <em>Tidy</em> keeps the SVG's own outlines and only merges near-identical colours, joins shapes and shortens the code: best when the outlines are already good, as in a trace from VTracer.</p>
+      </div>
+
+      <div class="field redraw-only">
         <div class="field-head"><span class="label" id="presetLabel">Quality</span><span class="term" id="presetNote"></span></div>
         <div class="seg" role="group" aria-labelledby="presetLabel" id="presetSeg">
           <button type="button" data-v="small">Smallest</button>
@@ -154,7 +164,7 @@
         <p class="hint">Sets detail, smoothing and small-shape protection together. Adjust any of them below.</p>
       </div>
 
-      <div class="field">
+      <div class="field redraw-only">
         <div class="field-head"><span class="label" id="modeLabel">Colours</span></div>
         <div class="seg" role="group" aria-labelledby="modeLabel" id="colourSeg">
           <button type="button" data-v="colour" aria-pressed="true">Keep colours</button>
@@ -162,14 +172,14 @@
         </div>
       </div>
 
-      <div class="field colour-only">
+      <div class="field colour-only redraw-only">
         <div class="field-head"><span class="label">Palette</span><span class="val" id="palCount"></span></div>
         <ul class="swatches" id="swatches" aria-label="Colours, bottom layer first"></ul>
         <p class="hint">Percentages are each colour's share of the artwork, background left out. Click a colour once to lock it in, so it stays however far you reduce <em>Most colours</em>. Click again to leave it out, and its pixels go to the nearest colour left; a third click hands it back. Faded colours were merged away: click one to bring it back, locked. <button type="button" class="linkish" id="palReset" hidden>Reset colours</button></p>
         <p class="hint">Traced as stacked layers, bottom first. Each layer runs under the ones above it, so no gaps open between colours.</p>
       </div>
 
-      <div class="field colour-only">
+      <div class="field colour-only redraw-only">
         <div class="field-head"><label for="maxCol">Most colours</label><span class="val" id="maxColV">24</span></div>
         <input id="maxCol" type="range" min="2" max="24" step="1" value="24">
         <p class="hint">For photos, gradients and AI images. The closest colours merge until this many are left; small distinct ones, like an eye, are kept.</p>
@@ -178,26 +188,26 @@
       <div class="field colour-only">
         <div class="field-head"><label for="merge">Merge similar colours</label><span class="val" id="mergeV">16</span></div>
         <input id="merge" type="range" min="0" max="80" step="2" value="16">
-        <p class="hint">Colours closer than this are traced as one. Fewer colours make a smaller file.</p>
+        <p class="hint">Colours closer than this are traced as one, or with <em>Tidy</em>, drawn as one. Fewer colours make a smaller file.</p>
       </div>
 
-      <div class="field colour-only">
+      <div class="field colour-only redraw-only">
         <label class="check"><input id="edgeBg" type="checkbox"> Remove the background</label>
         <p class="hint">Leaves out the colour around the artwork, such as a PNG's white background. The same colour inside the artwork, like white in an eye, is kept.</p>
       </div>
 
-      <div class="field colour-only">
+      <div class="field colour-only redraw-only">
         <label class="check"><input id="edges" type="checkbox" checked> Fix blended edges</label>
         <p class="hint">Where two colours meet, the soft pixels between them only take one of those two colours. Stops a fringe of a third colour, like pale grey along a dark edge.</p>
       </div>
 
-      <div class="field colour-only">
+      <div class="field colour-only redraw-only">
         <div class="field-head"><label for="clean">Clean up edges</label><span class="val" id="cleanV">0</span></div>
         <input id="clean" type="range" min="0" max="3" step="1" value="0">
         <p class="hint">Smooths out speckle and ragged edges from noisy or upscaled images before tracing.</p>
       </div>
 
-      <div class="field">
+      <div class="field redraw-only">
         <div class="field-head"><span class="label" id="gridLabel">Detail</span><span class="term">trace grid</span></div>
         <div class="seg" role="group" aria-labelledby="gridLabel" id="gridSeg">
           <button type="button" data-v="1024">1024</button>
@@ -207,37 +217,42 @@
         <p class="hint">Pixels along the long side. Higher keeps finer detail and makes a bigger file.</p>
       </div>
 
-      <div class="field">
+      <div class="field redraw-only">
         <div class="field-head"><label for="tol">Smoothing</label><span class="val" id="tolV">0.5</span></div>
         <input id="tol" type="range" min="0.1" max="1.5" step="0.1" value="0.5">
         <p class="hint">How far a curve may drift to merge into fewer, longer ones. <span class="term">opttolerance</span></p>
       </div>
 
-      <div class="field">
+      <div class="field redraw-only">
         <div class="field-head"><label for="protect">Protect small shapes</label><span class="val" id="protectV">6%</span></div>
         <input id="protect" type="range" min="0" max="25" step="1" value="6">
         <p class="hint">Shapes smaller than this share of the image, such as eyes, letters and thin lines, are traced with almost no smoothing. Big curves still get the full amount.</p>
       </div>
 
-      <div class="field">
+      <div class="field redraw-only">
         <div class="field-head"><label for="alpha">Corners</label><span class="val" id="alphaV">1.0</span></div>
-        <input id="alpha" type="range" min="0.5" max="1.3" step="0.1" value="1.0">
-        <p class="hint">Lower keeps sharp corners, higher rounds them off. <span class="term">alphamax</span></p>
+        <input id="alpha" type="range" min="0" max="1.3" step="0.1" value="1.0">
+        <p class="hint">Lower keeps sharp corners, higher rounds them off. At 0 every edge is a straight line, which is often smaller on busy artwork such as pen hatching. <span class="term">alphamax</span></p>
       </div>
 
-      <div class="field">
+      <div class="field redraw-only">
         <div class="field-head"><label for="turd">Remove specks</label><span class="val" id="turdV">16 px</span></div>
         <input id="turd" type="range" min="0" max="100" step="2" value="16">
         <p class="hint">Any patch of colour smaller than this takes the colour around it, in the PNG and the trace. Measured at 2048 px across and scaled to the size you export.</p>
       </div>
 
-      <div class="field mono-only" hidden>
+      <div class="field redraw-only">
+        <label class="check"><input id="slivers" type="checkbox"> Keep thin slivers</label>
+        <p class="hint">Speck removal spares long thin patches, such as the gaps between pen strokes and fine lines, and only removes round dots. Stops sketches darkening, at the cost of a bigger file.</p>
+      </div>
+
+      <div class="field mono-only redraw-only" hidden>
         <div class="field-head"><label for="thr">Threshold</label><span class="val" id="thrV">128</span></div>
         <input id="thr" type="range" min="1" max="254" step="1" value="128">
         <p class="hint">Anything darker than this becomes the shape.</p>
       </div>
 
-      <div class="field">
+      <div class="field redraw-only">
         <div class="field-head"><span class="label" id="decLabel">Decimal places</span></div>
         <div class="seg" role="group" aria-labelledby="decLabel" id="decSeg">
           <button type="button" data-v="0" aria-pressed="true">0</button>
@@ -251,7 +266,7 @@
           <label for="target">that differs by at most</label>
           <input id="target" type="number" min="0.01" max="5" step="0.05" value="0.2"><span>%</span>
         </div>
-        <p class="hint">Tries each detail and smoothing setting and keeps the smallest file that stays this close to the original.</p>
+        <p class="hint">Tries each detail and smoothing setting, straight lines, stronger colour merging and, for an SVG, Tidy. Keeps the smallest file that stays this close to the original.</p>
       </div>
     </aside>
 
@@ -341,7 +356,9 @@
     origPoints: null,
     mode: 'colour',        // 'colour' | 'mono'
     grid: 2048, tol: 0.5, alpha: 1.0, turd: 16, thr: 128, dec: 0, merge: 16, edgeBg: false,
-    protect: 6, maxCol: 24, clean: 0, edges: true,
+    protect: 6, maxCol: 24, clean: 0, edges: true, slivers: false,
+    method: 'redraw',      // 'redraw' | 'tidy'
+    tidyWhy: null,         // why Tidy can't read this SVG, or null when it can
     choices: { keep: [], drop: [] }, // colours the viewer locked in or left out
     result: null,          // {svg, bytes, points, layers, diffPct, diffUrl, opts}
     view: 'result',
@@ -464,6 +481,7 @@
         const res = await call({ op: 'compare', o, p, w: a.w, h: a.h, bw: b.w, bh: b.h }, [aIdx, a.data, b.data]);
         return { diffPct: res.head.diffPct, png: res.bufs[0] };
       },
+      tidy: async (text, o) => (await call({ op: 'tidy', o, text }, [])).head,
       async quantize(r, o, p) {
         const res = await call({ op: 'quantize', o, p, w: r.w, h: r.h }, [r.data]);
         return { ...res.head, png: res.bufs[0], w: r.w, h: r.h };
@@ -545,11 +563,22 @@
   }
 
   async function traceOnce(o) {
+    if (o.method === 'tidy') return tidyOnce(o);
     const p = await paletteFor(o);
     const R = await cachedRaster(state.source, o.grid, o.mode === 'mono');
     const { svg, layers } = await core.trace(R, o, p);
     const cmp = await compare(svg, o, p);
     return { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers, ...cmp, opts: o };
+  }
+
+  // Tidy keeps the SVG's outlines, so it never needs the trace raster. Compared in colour.
+  async function tidyOnce(o) {
+    o = { ...o, mode: 'colour' };
+    const t = await core.tidy(state.source.text, o);
+    if (t.unsupported) throw new Error(`Tidy can't keep this SVG's outlines: ${t.unsupported}. Use Redraw.`);
+    const p = await paletteFor(o);
+    const cmp = await compare(t.svg, o, p);
+    return { svg: t.svg, bytes: new Blob([t.svg]).size, points: countPoints(t.svg), layers: t.pathsOut, tidy: t, ...cmp, opts: o };
   }
 
   // Draw the result at CMP and compare it with the original, colour by colour.
@@ -624,8 +653,10 @@
     const [cls, txt] = dp < 0.2 ? ['good', 'Looks the same'] : dp < 1 ? ['warn', 'Check fine details'] : ['bad', 'Visibly different'];
     pill.className = `pill ${cls}`; pill.textContent = `${txt} · ${dp.toFixed(2)}% of pixels differ`; pill.hidden = false;
     $('footB').innerHTML = `<span><b>${fmtBytes(r.bytes)}</b></span><span>≈ <b>${r.points.toLocaleString()}</b> points</span>` +
-      (r.opts.mode === 'colour' ? `<span><b>${r.layers}</b> layer${r.layers === 1 ? '' : 's'}</span>` : '') +
-      `<span>grid <b>${r.opts.grid}</b> · smoothing <b>${r.opts.tol}</b></span>`;
+      (r.tidy
+        ? `<span><b>${r.tidy.pathsIn.toLocaleString()}</b> → <b>${r.tidy.pathsOut.toLocaleString()}</b> paths</span><span><b>${r.tidy.coloursIn}</b> → <b>${r.tidy.coloursOut}</b> colours</span><span>tidy · merge <b>${r.opts.merge}</b></span>`
+        : (r.opts.mode === 'colour' ? `<span><b>${r.layers}</b> layer${r.layers === 1 ? '' : 's'}</span>` : '') +
+          `<span>grid <b>${r.opts.grid}</b> · ${r.opts.alpha === 0 ? 'straight lines' : `smoothing <b>${r.opts.tol}</b>`}</span>`);
     $('code').value = r.svg;
     syncActions();
     renderView();
@@ -654,7 +685,7 @@
   function releaseUrls() { state.urls.splice(0).forEach((u) => URL.revokeObjectURL(u)); }
 
   // ---------- pipeline ----------
-  const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, choices: state.choices });
+  const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, slivers: state.slivers, method: state.method, choices: state.choices });
 
   async function run() {
     if (!state.source) return;
@@ -665,8 +696,21 @@
       const res = await traceOnce(opts());
       if (id !== state.run) return;
       state.result = res; showResult(); status(''); $('traceBtn').classList.remove('primary');
+      if (state.method === 'redraw') suggestTidy(res, id);
     } catch (e) { if (id === state.run) status(e.message || String(e)); }
   }
+  // A redraw of a well-traced SVG can come out bigger than the outlines it
+  // started from. When Tidy does better, say so.
+  async function suggestTidy(res, id) {
+    if (state.source.kind !== 'svg' || state.tidyWhy) return;
+    try {
+      const t = await core.tidy(state.source.text, { ...opts(), mode: 'colour' });
+      if (id !== state.run || t.unsupported) return;
+      const bytes = new Blob([t.svg]).size;
+      if (bytes < res.bytes) status(`Tidy keeps this SVG's own outlines and makes it ${fmtBytes(bytes)}, ${Math.round(100 * (1 - bytes / state.origBytes))}% smaller than the original. Choose Method: Tidy to see it.`);
+    } catch { /* only a suggestion */ }
+  }
+
   // With automatic updates off, a change only refreshes the palette (quick) and
   // waits for Trace, so big images and slow settings don't retrace on every nudge.
   let auto = true;
@@ -700,24 +744,39 @@
     const attempt = (plan) => {
       let done = 0;
       status(`Trying ${plan.length} settings…`);
-      return Promise.all(plan.map(async ([grid, tol]) => {
-        tries.push(await traceOnce({ ...opts(), grid, tol }));
+      return Promise.all(plan.map(async (over) => {
+        try { tries.push(await traceOnce({ ...opts(), ...over })); }
+        catch (e) { if (over.method !== 'tidy') throw e; /* Tidy declined this SVG; the redraws still count */ }
         if (id === state.run) status(`Trying ${plan.length} settings: ${++done} done…`);
       }));
     };
+    const describe = (o) => o.method === 'tidy' ? `Tidy, merge ${o.merge}` : `grid ${o.grid}, ${o.alpha === 0 ? 'straight lines' : `smoothing ${o.tol}`}${o.merge !== state.merge ? `, merge ${o.merge}` : ''}`;
     try {
-      await paletteFor(opts());
-      await attempt([[1024, 1.0], [1024, 0.5], [1024, 0.2], [2048, 1.0], [2048, 0.5], [2048, 0.2]]);
+      const redraw = { method: 'redraw' };
+      const plan = [];
+      for (const grid of [1024, 2048]) {
+        for (const tol of [1.0, 0.5, 0.2]) plan.push({ ...redraw, grid, tol });
+        // Straight lines: on busy artwork, like pen hatching, short lines beat curves.
+        plan.push({ ...redraw, grid, tol: 0.5, alpha: 0 });
+      }
+      if (state.mode === 'colour') {
+        // Merging shades the eye can't tell apart (locked colours still stay).
+        const merges = [32, 48].filter((m) => m > state.merge);
+        for (const merge of merges) plan.push({ ...redraw, grid: 2048, tol: 0.5, merge }, { ...redraw, grid: 2048, tol: 0.5, alpha: 0, merge });
+        if (state.source.kind === 'svg' && !state.tidyWhy) for (const merge of [state.merge, ...merges]) plan.push({ method: 'tidy', merge });
+      }
+      await attempt(plan);
       if (id !== state.run) return;
       if (!tries.some((t) => t.diffPct <= target)) {
-        await attempt([[4096, 0.5], [4096, 0.2]]);
+        await attempt([{ ...redraw, grid: 4096, tol: 0.5 }, { ...redraw, grid: 4096, tol: 0.2 }]);
         if (id !== state.run) return;
       }
       const ok = tries.filter((t) => t.diffPct <= target).sort((a, b) => a.bytes - b.bytes);
       const pick = ok[0] || tries.slice().sort((a, b) => a.diffPct - b.diffPct)[0];
-      state.grid = pick.opts.grid; state.tol = pick.opts.tol; syncControls();
+      for (const k of ['method', 'grid', 'tol', 'alpha', 'merge']) state[k] = pick.opts[k];
+      syncControls();
       state.result = pick; showResult();
-      status(ok.length ? `Smallest within ${target}%: grid ${pick.opts.grid}, smoothing ${pick.opts.tol}.` : `Nothing got within ${target}%. Showing the closest match. Try allowing a bigger difference.`);
+      status(ok.length ? `Smallest within ${target}%: ${describe(pick.opts)}.` : `Nothing got within ${target}%. Showing the closest match. Try allowing a bigger difference.`);
     } catch (e) { if (id === state.run) status(e.message || String(e)); }
     finally { btn.disabled = false; }
   }
@@ -732,7 +791,13 @@
     const origOpt = $('pngSize').querySelector('option[value="orig"]');
     origOpt.hidden = origOpt.disabled = !bitmap;
     if (!bitmap && $('pngSize').value === 'orig') $('pngSize').value = '2048';
-    state.edgeBg = bitmap; state.maxCol = bitmap ? 8 : 24; state.clean = bitmap ? 1 : 0; syncControls();
+    state.edgeBg = bitmap; state.maxCol = bitmap ? 8 : 24; state.clean = bitmap ? 1 : 0;
+    state.method = 'redraw'; state.tidyWhy = bitmap ? 'it is a bitmap' : null;
+    if (!bitmap) {
+      try { const t = await core.tidy(src.text, opts()); state.tidyWhy = t.unsupported || null; }
+      catch (e) { state.tidyWhy = e.message || String(e); }
+    }
+    syncControls();
     $('fileName').textContent = name;
     try {
       if (src.kind === 'svg') sizedSvg(src.text, 16);
@@ -765,15 +830,27 @@
     $('clean').value = state.clean; $('cleanV').textContent = state.clean ? `${state.clean} pass${state.clean > 1 ? 'es' : ''}` : 'off';
     for (const [seg, v] of [['gridSeg', state.grid], ['decSeg', state.dec], ['colourSeg', state.mode]])
       $(seg).querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === String(v))));
-    document.querySelectorAll('.colour-only').forEach((el) => { el.hidden = state.mode !== 'colour'; });
-    document.querySelectorAll('.mono-only').forEach((el) => { el.hidden = state.mode !== 'mono'; });
+    // Tidy draws in colour and ignores the redraw settings.
+    const tidy = state.method === 'tidy', svg = state.source && state.source.kind === 'svg';
+    const mode = tidy ? 'colour' : state.mode;
+    document.querySelectorAll('.colour-only,.mono-only,.redraw-only,.svg-only').forEach((el) => {
+      const c = el.classList;
+      el.hidden = (c.contains('colour-only') && mode !== 'colour') || (c.contains('mono-only') && mode !== 'mono') ||
+        (c.contains('redraw-only') && tidy) || (c.contains('svg-only') && !svg);
+    });
+    $('methodSeg').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === state.method)));
+    const tidyBtn = $('methodSeg').querySelector('[data-v="tidy"]');
+    tidyBtn.disabled = !!state.tidyWhy;
+    tidyBtn.title = state.tidyWhy ? `Tidy can't keep these outlines: ${state.tidyWhy}.` : "Keep this SVG's own outlines";
+    $('methodNote').textContent = state.tidyWhy ? 'Tidy unavailable' : '';
     $('tol').value = state.tol; $('tolV').textContent = state.tol.toFixed(1);
-    $('alpha').value = state.alpha; $('alphaV').textContent = state.alpha.toFixed(1);
+    $('alpha').value = state.alpha; $('alphaV').textContent = state.alpha === 0 ? 'straight' : state.alpha.toFixed(1);
     $('turd').value = state.turd; $('turdV').textContent = state.turd ? `${state.turd} px` : 'off';
     $('thr').value = state.thr; $('thrV').textContent = state.thr;
     $('merge').value = state.merge; $('mergeV').textContent = state.merge;
     $('edgeBg').checked = state.edgeBg;
     $('edges').checked = state.edges;
+    $('slivers').checked = state.slivers;
   }
   function segClicks(id, key, numeric) {
     $(id).addEventListener('click', (e) => {
@@ -781,7 +858,7 @@
       state[key] = numeric ? Number(b.dataset.v) : b.dataset.v; syncControls(); schedule();
     });
   }
-  segClicks('gridSeg', 'grid', true); segClicks('decSeg', 'dec', true); segClicks('colourSeg', 'mode', false);
+  segClicks('gridSeg', 'grid', true); segClicks('decSeg', 'dec', true); segClicks('colourSeg', 'mode', false); segClicks('methodSeg', 'method', false);
   const rgb = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
   const SAME = 24 * 24; // how close a colour must be to count as one the viewer picked
   const without = (list, c) => list.filter((q) => dist2(q, c) > SAME);
@@ -804,6 +881,7 @@
     $(id).addEventListener('input', (e) => { state[key] = Number(e.target.value); syncControls(); schedule(); });
   $('edgeBg').addEventListener('change', (e) => { state.edgeBg = e.target.checked; schedule(); });
   $('edges').addEventListener('change', (e) => { state.edges = e.target.checked; schedule(); });
+  $('slivers').addEventListener('change', (e) => { state.slivers = e.target.checked; schedule(); });
 
   $('modeSeg').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;

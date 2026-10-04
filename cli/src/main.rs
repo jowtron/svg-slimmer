@@ -2,7 +2,9 @@
 
 use rayon::prelude::*;
 use resvg::{tiny_skia, usvg};
-use slimmer_core::{compare, index, palette::Pal, png, trace, Image, Mode, Opts, Rgb, CMP};
+use slimmer_core::{compare, index, palette::Pal, png, tidy, trace, Image, Method, Mode, Opts, Rgb, CMP};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
@@ -14,10 +16,12 @@ Usage: svg-slim <input> [options]
 Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
 
   -o, --out <file>        Write the SVG here (default: <input>.slim.svg)
+  --tidy                  SVG input only: keep its outlines, just merge colours
+                          closer than --merge, join paths and shorten the data
   --preset <name>         small, balanced (default) or fine
   --grid <px>             Trace size, long side: 1024, 2048 or 4096
   --smoothing <t>         Curve smoothing, 0.1 to 1.5
-  --corner <a>            Corner threshold, 0 to 1.34 (default 1)
+  --corner <a>            Corner threshold, 0 to 1.34 (default 1); 0 = straight lines
   --protect <pct>         Keep shapes under this % of the width sharp (0 = off)
   --decimals <n>          Decimal places in the output (default 0)
   --colours <n>           Most colours to keep
@@ -26,9 +30,12 @@ Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
   --threshold <v>         Mono threshold, 0 to 255 (default 128)
   --specks <px>           Remove specks up to this size (default 16)
   --clean <passes>        Majority-filter passes
+  --slivers               Speck removal keeps long thin patches, such as the
+                          gaps between pen strokes
   --background / --no-background   Remove the colour touching the border
   --no-edges              Don't restrict blended edge pixels
-  --smallest              Try each detail and smoothing setting; keep the smallest
+  --smallest              Try detail, smoothing, straight lines, stronger colour
+                          merging and (for SVGs) --tidy; keep the smallest
                           result within --target percent difference
   --target <pct>          Allowed difference for --smallest (default 0.2)
   --diff <file.png>       Write the difference image
@@ -164,13 +171,63 @@ struct Attempt {
     opts: Opts,
 }
 
-fn attempt(src: &Source, o: &Opts, p: &Pal, a_idx: &[i16], a: &Raster) -> Attempt {
+/// The palette and the original's index map for a set of options. Both depend
+/// only on the colour settings, so attempts that differ in those share them.
+struct Setup {
+    a: Raster,
+    declared: Vec<Rgb>,
+    cache: Mutex<HashMap<String, std::sync::Arc<(Pal, Vec<i16>)>>>,
+}
+
+impl Setup {
+    fn get(&self, o: &Opts) -> std::sync::Arc<(Pal, Vec<i16>)> {
+        let key = format!("{:?}{}{}{}{}{}{:?}", o.mode, o.merge, o.edge_bg, o.thr, o.max_col, o.edges, o.choices);
+        if let Some(v) = self.cache.lock().unwrap().get(&key) {
+            return v.clone();
+        }
+        let p = if o.mode == Mode::Mono {
+            Pal::mono(self.declared.first().copied().unwrap_or([0, 0, 0]))
+        } else {
+            slimmer_core::palette::palette_for(&self.a.image(), o, &self.declared).unwrap_or_else(|e| fail(e))
+        };
+        let a_idx = index::source_index(&self.a.image(), o, &p);
+        let v = std::sync::Arc::new((p, a_idx));
+        self.cache.lock().unwrap().insert(key, v.clone());
+        v
+    }
+}
+
+/// Redraw or tidy with `o`, then compare. None when Tidy can't read the SVG.
+fn attempt(src: &Source, o: &Opts, setup: &Setup) -> Result<Attempt, String> {
     let mono = o.mode == Mode::Mono;
-    let r = raster(src, o.grid, mono);
-    let t = trace::trace(&r.image(), o, p);
-    let b = raster_svg(&t.svg, CMP, mono);
-    let c = compare::compare(a_idx, &a.image(), &b.image(), o, p);
-    Attempt { svg: t.svg, layers: t.layers, diff_pct: c.diff_pct, diff_png: c.diff_png, opts: o.clone() }
+    let pa = setup.get(o);
+    let (p, a_idx) = (&pa.0, &pa.1);
+    let (svg, layers) = match (o.method, src) {
+        (Method::Tidy, Source::Svg(text)) => {
+            let t = tidy::tidy(text, o).map_err(|e| format!("Tidy can't keep this SVG's outlines: {e}"))?;
+            (t.svg, t.paths_out)
+        }
+        (Method::Tidy, _) => return Err("--tidy needs an SVG".into()),
+        (Method::Redraw, _) => {
+            let r = raster(src, o.grid, mono);
+            let t = trace::trace(&r.image(), o, p);
+            (t.svg, t.layers)
+        }
+    };
+    let b = raster_svg(&svg, CMP, mono);
+    let c = compare::compare(a_idx, &setup.a.image(), &b.image(), o, p);
+    Ok(Attempt { svg, layers, diff_pct: c.diff_pct, diff_png: c.diff_png, opts: o.clone() })
+}
+
+/// One line describing how an attempt was made.
+fn describe(o: &Opts) -> String {
+    match o.method {
+        Method::Tidy => format!("tidy, merge {}", o.merge),
+        Method::Redraw => {
+            let lines = if o.alpha == 0.0 { "straight lines".to_string() } else { format!("smoothing {:.1}", o.tol) };
+            format!("grid {}, {lines}, merge {}", o.grid, o.merge)
+        }
+    }
 }
 
 /// Coordinates in the SVG's paths, counted as points (pairs of numbers).
@@ -225,7 +282,7 @@ fn main() {
             "--smallest" => smallest = true,
             "--target" => target = val().parse().unwrap_or_else(|_| fail("--target takes a number")),
             "-q" | "--quiet" => quiet = true,
-            "--mono" | "--background" | "--no-background" | "--no-edges" => set.push((a.clone(), String::new())),
+            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" => set.push((a.clone(), String::new())),
             "--preset" | "--grid" | "--smoothing" | "--corner" | "--protect" | "--decimals" | "--colours" | "--colors" | "--merge"
             | "--threshold" | "--specks" | "--clean" => {
                 let v = val();
@@ -273,6 +330,8 @@ fn main() {
             "--background" => o.edge_bg = true,
             "--no-background" => o.edge_bg = false,
             "--no-edges" => o.edges = false,
+            "--tidy" => o.method = Method::Tidy,
+            "--slivers" => o.slivers = true,
             _ => unreachable!(),
         }
     }
@@ -283,27 +342,39 @@ fn main() {
         Source::Svg(text) => declared_colours(text),
         _ => vec![],
     };
-    let a = raster(&src, CMP, mono);
-    let p = if mono {
-        Pal::mono(declared.first().copied().unwrap_or([0, 0, 0]))
-    } else {
-        let cmp = if mono { raster(&src, CMP, false) } else { Raster { w: a.w, h: a.h, data: a.data.clone() } };
-        slimmer_core::palette::palette_for(&cmp.image(), &o, &declared).unwrap_or_else(|e| fail(e))
-    };
-    let a_idx = index::source_index(&a.image(), &o, &p);
+    let setup = Setup { a: raster(&src, CMP, mono), declared, cache: Mutex::new(HashMap::new()) };
 
     let pick = if smallest {
-        let plan = [(1024, 1.0), (1024, 0.5), (1024, 0.2), (2048, 1.0), (2048, 0.5), (2048, 0.2)];
-        let run = |plan: &[(usize, f64)]| -> Vec<Attempt> {
-            plan.par_iter().map(|&(grid, tol)| attempt(&src, &Opts { grid, tol, ..o.clone() }, &p, &a_idx, &a)).collect()
-        };
+        let run = |plan: &[Opts]| -> Vec<Attempt> { plan.par_iter().filter_map(|o| attempt(&src, o, &setup).ok()).collect() };
+        let redraw = Opts { method: Method::Redraw, ..o.clone() };
+        let mut plan: Vec<Opts> = Vec::new();
+        for grid in [1024, 2048] {
+            for tol in [1.0, 0.5, 0.2] {
+                plan.push(Opts { grid, tol, ..redraw.clone() });
+            }
+            // Straight lines: on busy artwork, like pen hatching, short lines beat curves.
+            plan.push(Opts { grid, tol: 0.5, alpha: 0.0, ..redraw.clone() });
+        }
+        if !mono {
+            // Merging shades the eye can't tell apart (locked colours still stay).
+            let merges: Vec<f64> = [32.0, 48.0].into_iter().filter(|&m| m > o.merge).collect();
+            for &merge in &merges {
+                plan.push(Opts { grid: 2048, tol: 0.5, merge, ..redraw.clone() });
+                plan.push(Opts { grid: 2048, tol: 0.5, alpha: 0.0, merge, ..redraw.clone() });
+            }
+            if matches!(src, Source::Svg(_)) {
+                for merge in std::iter::once(o.merge).chain(merges) {
+                    plan.push(Opts { method: Method::Tidy, merge, ..o.clone() });
+                }
+            }
+        }
         let mut tries = run(&plan);
         if !tries.iter().any(|t| t.diff_pct <= target) {
-            tries.extend(run(&[(4096, 0.5), (4096, 0.2)]));
+            tries.extend(run(&[Opts { grid: 4096, tol: 0.5, ..redraw.clone() }, Opts { grid: 4096, tol: 0.2, ..redraw.clone() }]));
         }
         if !quiet {
             for t in &tries {
-                eprintln!("  grid {:>4}, smoothing {:.1}: {:>8} bytes, {:.3}% different", t.opts.grid, t.opts.tol, t.svg.len(), t.diff_pct);
+                eprintln!("  {:<42} {:>8} bytes, {:.3}% different", describe(&t.opts), t.svg.len(), t.diff_pct);
             }
         }
         let within = tries.iter().filter(|t| t.diff_pct <= target).min_by_key(|t| t.svg.len()).map(|t| t as *const Attempt);
@@ -315,7 +386,7 @@ fn main() {
         let i = tries.iter().position(|t| std::ptr::eq(t, chosen)).unwrap();
         tries.swap_remove(i)
     } else {
-        attempt(&src, &o, &p, &a_idx, &a)
+        attempt(&src, &o, &setup).unwrap_or_else(|e| fail(e))
     };
 
     let out = out.unwrap_or_else(|| {
@@ -332,7 +403,8 @@ fn main() {
             Source::Svg(_) => 2048,
         });
         let r = raster(&src, n, mono);
-        let q = png::indexed(&index::index_map(&r.image(), &pick.opts, &p), r.w, r.h, &p.pal);
+        let p = &setup.get(&pick.opts).0;
+        let q = png::indexed(&index::index_map(&r.image(), &pick.opts, p), r.w, r.h, &p.pal);
         write(po, &q.png);
         if !quiet {
             eprintln!("{}: {} colours{}, {} bytes", po.display(), q.colours, if q.transparent { " + transparent" } else { "" }, q.png.len());
@@ -341,7 +413,7 @@ fn main() {
     if !quiet {
         let o = &pick.opts;
         eprintln!(
-            "{}: {} bytes (from {}), {} layer{}, ≈{} points, {:.3}% different; grid {}, smoothing {} — {:.2} s",
+            "{}: {} bytes (from {}), {} layer{}, ≈{} points, {:.3}% different; {} — {:.2} s",
             out.display(),
             pick.svg.len(),
             bytes.len(),
@@ -349,8 +421,7 @@ fn main() {
             if pick.layers == 1 { "" } else { "s" },
             count_points(&pick.svg),
             pick.diff_pct,
-            o.grid,
-            o.tol,
+            describe(o),
             t0.elapsed().as_secs_f64()
         );
     }

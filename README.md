@@ -14,7 +14,10 @@ Auto-tracers such as VTracer, and exports from design tools, often produce SVGs 
 - **Handles AI images and upscales.** Blended edge pixels only take one of the colours actually meeting at that edge, so no fringe of a third colour appears. Specks and upscaler halos are removed before tracing, and the background is removed only where it touches the border, so white inside the artwork stays white.
 - **Balances size against detail.** Presets run from Smallest to Finest. "Protect small shapes" keeps eyes, letters and thin lines sharp while big curves are still simplified.
 - **Shows what changed.** A difference view marks changed pixels in red, and a zoom moves both views together. The verdict ignores edges that moved by less than a pixel.
-- **Find smallest** tries each detail and smoothing setting, and keeps the smallest file that stays within the difference you allow.
+- **Tidies SVGs that are already well traced.** Redrawing a good trace, such as one from VTracer, only loses detail, and on busy artwork like pen hatching the curves cost more bytes than the straight lines they replace. *Tidy* keeps the SVG's own outlines and only merges near-identical colours, joins shapes of one colour into a single path wherever that can't change what's painted over what, and rewrites the path data compactly. It reads flat SVGs, the kind tracers write; anything with strokes, styles, gradients or other shapes is left to *Redraw*. A 166 KB VTracer drawing comes out 94 KB with 0.01% of pixels changed.
+- **Straight lines when they're smaller.** Corners at 0 draws every edge as a straight line, like VTracer's polygon mode.
+- **Keep thin slivers** stops speck removal filling the gaps between pen strokes, so sketches don't darken; round specks still go.
+- **Find smallest** tries each detail and smoothing setting, straight lines, stronger colour merging and, for an SVG, Tidy, and keeps the smallest file that stays within the difference you allow.
 - **Exports** the slimmed SVG, or a **quantized indexed PNG** of the original: the image reduced to the palette, written as a true palette PNG at 1, 2, 4 or 8 bits per pixel, with a transparent background if you removed it.
 
 It works best on flat artwork: logos, icons and illustrations with a handful of solid colours. Gradients and soft shadows are reduced to the nearest solid colour, and text is traced as shapes.
@@ -24,8 +27,10 @@ It works best on flat artwork: logos, icons and illustrations with a handful of 
 1. The source is drawn at the trace size (1024, 2048 or 4096 px on the long side).
 2. **Palette:** a histogram of solid pixels only, so blended edge pixels never become colours of their own; similar colours merged; reduced to the colour limit by merging the closest pair (weighted so small, distinct colours survive); refined with k-means; your locked and removed colours applied.
 3. **Quantize:** every pixel takes its nearest palette colour. Blended edge pixels are restricted to the colours of the nearest solid pixels around them. The background is flood-filled from the border. A majority filter and speck removal clean the map.
-4. **Trace:** each colour becomes a mask covering itself and everything above it, traced with [Potrace](https://potrace.sourceforge.net/). Small shapes can take a lightly smoothed second trace. Paths are rewritten as rounded relative commands.
+4. **Trace** (Redraw): each colour becomes a mask covering itself and everything above it, traced with [Potrace](https://potrace.sourceforge.net/). Small shapes can take a lightly smoothed second trace. Paths are rewritten as rounded relative commands.
 5. **Compare:** original and result are drawn at 2048 px and compared colour by colour, with a one-pixel tolerance.
+
+**Tidy** skips steps 1 to 4: it reads the SVG's paths directly (`core/src/tidy.rs`), snaps fills within *Merge similar colours* to the most used of them, joins each path to the latest earlier path of its colour when nothing painted in between overlaps it and it overlaps nothing in that path (by bounding box, so fill rules can't open holes), and writes the data as relative or absolute commands, whichever is shorter, with `h`/`v` for level lines. Step 5 still checks the result.
 
 ## Develop and deploy
 

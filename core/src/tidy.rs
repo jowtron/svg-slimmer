@@ -1,0 +1,741 @@
+//! Tidy: slim an SVG without redrawing it.
+//!
+//! A good trace (VTracer's, say) is already compact geometry; redrawing it
+//! through the raster pipeline only loses detail. Its waste is elsewhere: one
+//! `<path>` element per shape, and dozens of colours too close to tell apart.
+//! Tidy keeps every outline as drawn and
+//!
+//! - snaps colours closer than `o.merge` to the most used of them,
+//! - joins paths of one colour into a single element wherever that cannot change
+//!   what is painted over what,
+//! - rewrites the path data compactly: relative or absolute, whichever is
+//!   shorter, `h`/`v` for level lines, no repeated command letters.
+//!
+//! It only reads flat SVGs, the kind tracers write: `<path>` elements with a
+//! fill, optionally inside plain `<g>`s, optionally moved by `translate()`.
+//! Anything else (strokes, styles, gradients, other shapes) is declined with a
+//! reason, and the caller redraws instead.
+
+use std::collections::HashMap;
+
+use svgtypes::{Color, PathParser, PathSegment, Transform};
+
+use crate::Opts;
+
+pub struct Tidied {
+    pub svg: String,
+    /// Paths read, and `<path>` elements written.
+    pub paths_in: usize,
+    pub paths_out: usize,
+    /// Distinct fills read, and left after snapping.
+    pub colours_in: usize,
+    pub colours_out: usize,
+}
+
+/// One path command in absolute coordinates, in thousandths of a unit, so the
+/// relative steps written later are exact.
+#[derive(Clone, Copy)]
+enum Cmd {
+    M(i64, i64),
+    L(i64, i64),
+    C(i64, i64, i64, i64, i64, i64),
+    S(i64, i64, i64, i64),
+    Q(i64, i64, i64, i64),
+    A { rx: i64, ry: i64, rot: i64, large: bool, sweep: bool, x: i64, y: i64 },
+    Z,
+}
+
+#[derive(Clone, Copy)]
+struct Bbox {
+    x0: i64,
+    y0: i64,
+    x1: i64,
+    y1: i64,
+}
+
+impl Bbox {
+    fn empty() -> Self {
+        Bbox { x0: i64::MAX, y0: i64::MAX, x1: i64::MIN, y1: i64::MIN }
+    }
+    fn add(&mut self, x: i64, y: i64, pad: i64) {
+        self.x0 = self.x0.min(x - pad);
+        self.y0 = self.y0.min(y - pad);
+        self.x1 = self.x1.max(x + pad);
+        self.y1 = self.y1.max(y + pad);
+    }
+    fn union(&mut self, b: &Bbox) {
+        self.x0 = self.x0.min(b.x0);
+        self.y0 = self.y0.min(b.y0);
+        self.x1 = self.x1.max(b.x1);
+        self.y1 = self.y1.max(b.y1);
+    }
+    /// Touching counts as meeting: anti-aliased edges that touch interact.
+    fn meets(&self, b: &Bbox) -> bool {
+        self.x0 <= b.x1 && b.x0 <= self.x1 && self.y0 <= b.y1 && b.y0 <= self.y1
+    }
+    fn area(&self) -> f64 {
+        if self.x1 < self.x0 {
+            return 0.0;
+        }
+        (self.x1 - self.x0) as f64 * (self.y1 - self.y0) as f64
+    }
+}
+
+struct Shape {
+    fill: [u8; 4],
+    evenodd: bool,
+    cmds: Vec<Cmd>,
+    bbox: Bbox,
+}
+
+/// Inherited presentation attributes.
+#[derive(Clone, Copy)]
+struct Paint {
+    fill: Option<[u8; 4]>, // None: fill="none"
+    evenodd: bool,
+    dx: f64,
+    dy: f64,
+}
+
+const UNIT: f64 = 1000.0;
+
+fn units(v: f64) -> i64 {
+    (v * UNIT).round() as i64
+}
+
+// ---------- reading ----------
+
+struct Tag<'a> {
+    name: &'a str,
+    attrs: Vec<(&'a str, &'a str)>,
+    closing: bool,
+    empty: bool,
+}
+
+/// Split the text into tags, skipping the declaration, comments, doctype and
+/// text between tags.
+fn tags(text: &str) -> Result<Vec<Tag<'_>>, String> {
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    let mut i = 0;
+    while let Some(off) = text[i..].find('<') {
+        i += off;
+        let rest = &text[i..];
+        if rest.starts_with("<!--") {
+            i += rest.find("-->").ok_or("unclosed comment")? + 3;
+            continue;
+        }
+        if rest.starts_with("<?") {
+            i += rest.find("?>").ok_or("unclosed declaration")? + 2;
+            continue;
+        }
+        if rest.starts_with("<![CDATA[") {
+            return Err("it has embedded CDATA".into());
+        }
+        if rest.starts_with("<!") {
+            if rest.contains("<!ENTITY") {
+                return Err("it defines entities".into());
+            }
+            i += rest.find('>').ok_or("unclosed doctype")? + 1;
+            continue;
+        }
+        // An element tag.
+        let mut j = i + 1;
+        let closing = b.get(j) == Some(&b'/');
+        if closing {
+            j += 1;
+        }
+        let start = j;
+        while j < b.len() && !b[j].is_ascii_whitespace() && b[j] != b'>' && b[j] != b'/' {
+            j += 1;
+        }
+        let name = &text[start..j];
+        let mut attrs = Vec::new();
+        loop {
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            match b.get(j) {
+                None => return Err("unclosed tag".into()),
+                Some(b'>') => {
+                    out.push(Tag { name, attrs, closing, empty: false });
+                    j += 1;
+                    break;
+                }
+                Some(b'/') if b.get(j + 1) == Some(&b'>') => {
+                    out.push(Tag { name, attrs, closing, empty: true });
+                    j += 2;
+                    break;
+                }
+                _ => {}
+            }
+            let a0 = j;
+            while j < b.len() && b[j] != b'=' && !b[j].is_ascii_whitespace() && b[j] != b'>' {
+                j += 1;
+            }
+            let key = &text[a0..j];
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if b.get(j) != Some(&b'=') {
+                return Err(format!("attribute {key} has no value"));
+            }
+            j += 1;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let q = *b.get(j).ok_or("unclosed tag")?;
+            if q != b'"' && q != b'\'' {
+                return Err(format!("attribute {key} is unquoted"));
+            }
+            let v0 = j + 1;
+            let len = text[v0..].find(q as char).ok_or("unclosed attribute")?;
+            let value = &text[v0..v0 + len];
+            if value.contains('&') {
+                return Err("an attribute uses character references".into());
+            }
+            attrs.push((key, value));
+            j = v0 + len + 1;
+        }
+        i = j;
+    }
+    Ok(out)
+}
+
+fn colour(v: &str) -> Result<Option<[u8; 4]>, String> {
+    let v = v.trim();
+    if v == "none" || v == "transparent" {
+        return Ok(None);
+    }
+    let c: Color = v.parse().map_err(|_| format!("it has a fill Tidy can't read ({v})"))?;
+    Ok(Some([c.red, c.green, c.blue, c.alpha]))
+}
+
+/// Apply one element's presentation attributes on top of what it inherits.
+/// `keep` names attributes the element itself handles.
+fn paint(parent: Paint, attrs: &[(&str, &str)], keep: &[&str]) -> Result<Paint, String> {
+    let mut p = parent;
+    for &(k, v) in attrs {
+        match k {
+            "fill" => p.fill = colour(v)?,
+            "fill-rule" => p.evenodd = v.trim() == "evenodd",
+            "transform" => {
+                let t: Transform = v.parse().map_err(|_| "it has a transform Tidy can't read")?;
+                if (t.a, t.b, t.c, t.d) != (1.0, 0.0, 0.0, 1.0) {
+                    return Err("it scales or rotates shapes".into());
+                }
+                p.dx += t.e;
+                p.dy += t.f;
+            }
+            "stroke" if v.trim() == "none" => {}
+            "opacity" | "fill-opacity" if v.trim().parse::<f64>() == Ok(1.0) => {}
+            "id" | "class" | "version" | "baseProfile" | "xml:space" | "data-name" => {}
+            // Namespaced attributes are editor notes (sodipodi:, inkscape:) or
+            // xml:space; none of them changes what is drawn.
+            k if k.starts_with("xmlns") || k.starts_with("data-") || k.contains(':') || keep.contains(&k) => {}
+            "stroke" | "stroke-width" | "opacity" | "fill-opacity" | "style" | "clip-path" | "mask" | "filter" => {
+                return Err(format!("it uses {k}"))
+            }
+            k => return Err(format!("it uses the {k} attribute")),
+        }
+    }
+    Ok(p)
+}
+
+fn read_path(d: &str, p: &Paint) -> Result<(Vec<Cmd>, Bbox), String> {
+    let (ox, oy) = (p.dx, p.dy);
+    let mut cmds = Vec::new();
+    let mut bbox = Bbox::empty();
+    let (mut cx, mut cy, mut sx, mut sy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    // The last cubic's second control point, which a smooth curve reflects.
+    let mut ctrl: Option<(f64, f64)> = None;
+    let u = |x: f64, y: f64| (units(x + ox), units(y + oy));
+    for seg in PathParser::from(d) {
+        let seg = seg.map_err(|_| "a path's data is malformed")?;
+        // Resolve relative coordinates against the current point.
+        let rel = |abs: bool| if abs { (0.0, 0.0) } else { (cx, cy) };
+        let prev_ctrl = ctrl.take();
+        match seg {
+            PathSegment::MoveTo { abs, x, y } => {
+                let (bx, by) = rel(abs);
+                (cx, cy) = (x + bx, y + by);
+                (sx, sy) = (cx, cy);
+                let (x, y) = u(cx, cy);
+                cmds.push(Cmd::M(x, y));
+                bbox.add(x, y, 0);
+            }
+            PathSegment::LineTo { abs, x, y } => {
+                let (bx, by) = rel(abs);
+                (cx, cy) = (x + bx, y + by);
+                let (x, y) = u(cx, cy);
+                cmds.push(Cmd::L(x, y));
+                bbox.add(x, y, 0);
+            }
+            PathSegment::HorizontalLineTo { abs, x } => {
+                cx = if abs { x } else { cx + x };
+                let (x, y) = u(cx, cy);
+                cmds.push(Cmd::L(x, y));
+                bbox.add(x, y, 0);
+            }
+            PathSegment::VerticalLineTo { abs, y } => {
+                cy = if abs { y } else { cy + y };
+                let (x, y) = u(cx, cy);
+                cmds.push(Cmd::L(x, y));
+                bbox.add(x, y, 0);
+            }
+            PathSegment::CurveTo { abs, x1, y1, x2, y2, x, y } => {
+                let (bx, by) = rel(abs);
+                let (a, b) = u(x1 + bx, y1 + by);
+                let (c, d) = u(x2 + bx, y2 + by);
+                ctrl = Some((x2 + bx, y2 + by));
+                (cx, cy) = (x + bx, y + by);
+                let (e, f) = u(cx, cy);
+                cmds.push(Cmd::C(a, b, c, d, e, f));
+                for (x, y) in [(a, b), (c, d), (e, f)] {
+                    bbox.add(x, y, 0);
+                }
+            }
+            PathSegment::SmoothCurveTo { abs, x2, y2, x, y } => {
+                let (bx, by) = rel(abs);
+                let (rx, ry) = prev_ctrl.map_or((cx, cy), |(px, py)| (2.0 * cx - px, 2.0 * cy - py));
+                let (a, b) = u(rx, ry);
+                let (c, d) = u(x2 + bx, y2 + by);
+                ctrl = Some((x2 + bx, y2 + by));
+                (cx, cy) = (x + bx, y + by);
+                let (e, f) = u(cx, cy);
+                cmds.push(Cmd::S(c, d, e, f));
+                for (x, y) in [(a, b), (c, d), (e, f)] {
+                    bbox.add(x, y, 0);
+                }
+            }
+            PathSegment::Quadratic { abs, x1, y1, x, y } => {
+                let (bx, by) = rel(abs);
+                let (a, b) = u(x1 + bx, y1 + by);
+                (cx, cy) = (x + bx, y + by);
+                let (e, f) = u(cx, cy);
+                cmds.push(Cmd::Q(a, b, e, f));
+                bbox.add(a, b, 0);
+                bbox.add(e, f, 0);
+            }
+            PathSegment::SmoothQuadratic { .. } => return Err("it uses T path commands".into()),
+            PathSegment::EllipticalArc { abs, rx, ry, x_axis_rotation, large_arc, sweep, x, y } => {
+                let (bx, by) = rel(abs);
+                let (px, py) = u(cx, cy);
+                (cx, cy) = (x + bx, y + by);
+                let (e, f) = u(cx, cy);
+                let r = units(rx.abs().max(ry.abs()) * 2.0);
+                cmds.push(Cmd::A { rx: units(rx.abs()), ry: units(ry.abs()), rot: units(x_axis_rotation), large: large_arc, sweep, x: e, y: f });
+                bbox.add(px, py, r);
+                bbox.add(e, f, r);
+            }
+            PathSegment::ClosePath { .. } => {
+                (cx, cy) = (sx, sy);
+                cmds.push(Cmd::Z);
+            }
+        }
+    }
+    Ok((cmds, bbox))
+}
+
+struct Root {
+    attrs: Vec<(String, String)>,
+    long_side: f64,
+}
+
+fn read(text: &str) -> Result<(Root, Vec<Shape>), String> {
+    let tags = tags(text)?;
+    let mut shapes = Vec::new();
+    let mut stack: Vec<Paint> = Vec::new();
+    let mut root: Option<Root> = None;
+    let mut skip: Option<&str> = None; // inside title, desc or metadata
+    for t in &tags {
+        if let Some(name) = skip {
+            if t.closing && t.name == name {
+                skip = None;
+            }
+            continue;
+        }
+        if t.closing {
+            if t.name == "svg" || t.name == "g" {
+                stack.pop();
+            }
+            continue;
+        }
+        match t.name {
+            "svg" if root.is_none() => {
+                let p = paint(Paint { fill: Some([0, 0, 0, 255]), evenodd: false, dx: 0.0, dy: 0.0 }, &t.attrs, &["viewBox", "width", "height", "preserveAspectRatio"])?;
+                let get = |k: &str| t.attrs.iter().find(|a| a.0 == k).map(|a| a.1);
+                let vb: Vec<f64> = get("viewBox").map(|v| v.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect()).unwrap_or_default();
+                let len = |k: &str| get(k).filter(|v| !v.ends_with('%')).and_then(|v| v.trim_end_matches("px").parse::<f64>().ok());
+                let long_side = if vb.len() == 4 { vb[2].max(vb[3]) } else { len("width").unwrap_or(300.0).max(len("height").unwrap_or(150.0)) };
+                let mut attrs = Vec::new();
+                if vb.len() == 4 {
+                    attrs.push(("viewBox".to_string(), get("viewBox").unwrap().to_string()));
+                }
+                for k in ["width", "height"] {
+                    // Percentages only matter without a viewBox.
+                    if let Some(v) = get(k).filter(|v| !(v.ends_with('%') && vb.len() == 4)) {
+                        attrs.push((k.to_string(), v.to_string()));
+                    }
+                }
+                if let Some(v) = get("preserveAspectRatio") {
+                    attrs.push(("preserveAspectRatio".to_string(), v.to_string()));
+                }
+                root = Some(Root { attrs, long_side });
+                stack.push(p);
+                if t.empty {
+                    break;
+                }
+            }
+            "g" => {
+                let parent = *stack.last().ok_or("a group sits outside the svg")?;
+                let p = paint(parent, &t.attrs, &[])?;
+                if !t.empty {
+                    stack.push(p);
+                }
+            }
+            "path" => {
+                let parent = *stack.last().ok_or("a path sits outside the svg")?;
+                let p = paint(parent, &t.attrs, &["d"])?;
+                let d = t.attrs.iter().find(|a| a.0 == "d").map(|a| a.1).unwrap_or("");
+                if let Some(fill) = p.fill {
+                    let (cmds, bbox) = read_path(d, &p)?;
+                    if cmds.len() > 1 && fill[3] > 0 {
+                        shapes.push(Shape { fill, evenodd: p.evenodd, cmds, bbox });
+                    }
+                }
+                if !t.empty {
+                    skip = Some("path");
+                }
+            }
+            // Editor elements such as sodipodi:namedview hold settings, not drawing.
+            name if name.contains(':') || name == "title" || name == "desc" || name == "metadata" => {
+                if !t.empty {
+                    skip = Some(name);
+                }
+            }
+            "defs" if t.empty => {}
+            other => return Err(format!("it has {} elements", if other.is_empty() { "unnamed" } else { other })),
+        }
+    }
+    let root = root.ok_or("there's no svg element")?;
+    if shapes.is_empty() {
+        return Err("there are no filled paths".into());
+    }
+    Ok((root, shapes))
+}
+
+// ---------- merging ----------
+
+/// Snap each fill to the most used colour within `merge` of it. Fills with
+/// different opacity never merge.
+fn snap_colours(shapes: &mut [Shape], merge: f64) -> (usize, usize) {
+    let mut weight: HashMap<[u8; 4], f64> = HashMap::new();
+    for s in shapes.iter() {
+        *weight.entry(s.fill).or_default() += s.bbox.area().max(1.0);
+    }
+    let colours_in = weight.len();
+    let mut order: Vec<([u8; 4], f64)> = weight.into_iter().collect();
+    order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+    let m2 = merge * merge;
+    let near = |a: &[u8; 4], b: &[u8; 4]| a[3] == b[3] && (0..3).map(|k| (a[k] as f64 - b[k] as f64).powi(2)).sum::<f64>() <= m2;
+    let mut reps: Vec<[u8; 4]> = Vec::new();
+    let mut to: HashMap<[u8; 4], [u8; 4]> = HashMap::new();
+    for (c, _) in order {
+        let r = match reps.iter().find(|r| merge > 0.0 && near(r, &c)) {
+            Some(r) => *r,
+            None => {
+                reps.push(c);
+                c
+            }
+        };
+        to.insert(c, r);
+    }
+    for s in shapes.iter_mut() {
+        s.fill = to[&s.fill];
+    }
+    (colours_in, reps.len())
+}
+
+struct Group {
+    fill: [u8; 4],
+    evenodd: bool,
+    members: Vec<Bbox>,
+    bbox: Bbox,
+    cmds: Vec<Cmd>,
+}
+
+/// How far back a shape may look for a group to join.
+const REACH: usize = 256;
+
+/// Join each shape to an earlier group of its colour when nothing painted in
+/// between overlaps it (so moving it down changes nothing) and it overlaps
+/// nothing already in the group (so fill rules can't open holes).
+fn group(shapes: Vec<Shape>) -> Vec<Group> {
+    let mut groups: Vec<Group> = Vec::new();
+    for s in shapes {
+        let mut join = None;
+        for (gi, g) in groups.iter().enumerate().rev().take(REACH) {
+            let overlaps = g.bbox.meets(&s.bbox) && g.members.iter().any(|m| m.meets(&s.bbox));
+            if g.fill == s.fill && g.evenodd == s.evenodd && !overlaps {
+                join = Some(gi);
+                break;
+            }
+            // Order between solid shapes of one colour doesn't show, so move past them.
+            let same_solid = g.fill == s.fill && s.fill[3] == 255;
+            if overlaps && !same_solid {
+                break;
+            }
+        }
+        match join {
+            Some(gi) => {
+                let g = &mut groups[gi];
+                g.members.push(s.bbox);
+                g.bbox.union(&s.bbox);
+                g.cmds.extend(s.cmds);
+            }
+            None => groups.push(Group { fill: s.fill, evenodd: s.evenodd, members: vec![s.bbox], bbox: s.bbox, cmds: s.cmds }),
+        }
+    }
+    groups
+}
+
+// ---------- writing ----------
+
+/// A number in thousandths, written with at most `dec` decimals.
+fn num(v: i64, dec: u32) -> String {
+    let step = 10i64.pow(3 - dec);
+    let v = (v as f64 / step as f64).round() as i64 * step;
+    let neg = v < 0;
+    let a = v.unsigned_abs();
+    let (int, frac) = (a / 1000, a % 1000);
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    if int > 0 || frac == 0 {
+        s.push_str(&int.to_string());
+    }
+    if frac > 0 {
+        let f = format!("{:03}", frac);
+        s.push('.');
+        s.push_str(f.trim_end_matches('0'));
+    }
+    s
+}
+
+/// Append numbers to a command, with separators only where needed.
+fn push_nums(out: &mut String, vals: &[String]) {
+    for (i, v) in vals.iter().enumerate() {
+        if i > 0 {
+            let prev = &vals[i - 1];
+            let needs = !(v.starts_with('-') || (v.starts_with('.') && prev.contains('.')));
+            if needs {
+                out.push(' ');
+            }
+        }
+        out.push_str(v);
+    }
+}
+
+struct Writer {
+    dec: u32,
+    out: String,
+    last: char,
+    last_num: String,
+}
+
+impl Writer {
+    /// Emit a command, dropping the letter when it repeats the previous one.
+    fn emit(&mut self, cmd: char, vals: Vec<String>) {
+        if cmd != self.last || cmd == 'M' || cmd == 'm' {
+            self.out.push(cmd);
+            self.last_num.clear();
+        } else if let Some(first) = vals.first() {
+            let needs = !(first.starts_with('-') || (first.starts_with('.') && self.last_num.contains('.')));
+            if needs && !self.last_num.is_empty() {
+                self.out.push(' ');
+            }
+        }
+        push_nums(&mut self.out, &vals);
+        self.last_num = vals.last().cloned().unwrap_or_default();
+        // After a move, implicit repeats mean line-to, so never treat M as repeatable.
+        self.last = cmd;
+    }
+
+    /// Write `rel` (relative form) or `abs`, whichever is shorter.
+    fn either(&mut self, rel: (char, Vec<i64>), abs: (char, Vec<i64>)) {
+        let f = |v: &Vec<i64>| v.iter().map(|&x| num(x, self.dec)).collect::<Vec<_>>();
+        let (r, a) = (f(&rel.1), f(&abs.1));
+        let len = |c: char, v: &Vec<String>| v.iter().map(|s| s.len() + 1).sum::<usize>() + usize::from(c != self.last);
+        if len(abs.0, &a) < len(rel.0, &r) {
+            self.emit(abs.0, a);
+        } else {
+            self.emit(rel.0, r);
+        }
+    }
+}
+
+fn path_data(cmds: &[Cmd], dec: u32) -> String {
+    let mut w = Writer { dec, out: String::new(), last: '\0', last_num: String::new() };
+    let (mut cx, mut cy, mut sx, mut sy) = (0i64, 0i64, 0i64, 0i64);
+    let mut first = true;
+    let q = |v: i64| {
+        let step = 10i64.pow(3 - dec);
+        (v as f64 / step as f64).round() as i64 * step
+    };
+    for &c in cmds {
+        match c {
+            Cmd::M(x, y) => {
+                let (x, y) = (q(x), q(y));
+                if first {
+                    w.emit('M', vec![num(x, dec), num(y, dec)]);
+                    first = false;
+                } else {
+                    w.either(('m', vec![x - cx, y - cy]), ('M', vec![x, y]));
+                }
+                (cx, cy, sx, sy) = (x, y, x, y);
+            }
+            Cmd::L(x, y) => {
+                let (x, y) = (q(x), q(y));
+                let (dx, dy) = (x - cx, y - cy);
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                if dy == 0 {
+                    w.either(('h', vec![dx]), ('H', vec![x]));
+                } else if dx == 0 {
+                    w.either(('v', vec![dy]), ('V', vec![y]));
+                } else {
+                    w.either(('l', vec![dx, dy]), ('L', vec![x, y]));
+                }
+                (cx, cy) = (x, y);
+            }
+            Cmd::C(a, b, c2, d, e, f) => {
+                let p = [a, b, c2, d, e, f].map(q);
+                let rel = vec![p[0] - cx, p[1] - cy, p[2] - cx, p[3] - cy, p[4] - cx, p[5] - cy];
+                w.either(('c', rel), ('C', p.to_vec()));
+                (cx, cy) = (p[4], p[5]);
+            }
+            Cmd::S(c2, d, e, f) => {
+                let p = [c2, d, e, f].map(q);
+                w.either(('s', vec![p[0] - cx, p[1] - cy, p[2] - cx, p[3] - cy]), ('S', p.to_vec()));
+                (cx, cy) = (p[2], p[3]);
+            }
+            Cmd::Q(a, b, e, f) => {
+                let p = [a, b, e, f].map(q);
+                w.either(('q', vec![p[0] - cx, p[1] - cy, p[2] - cx, p[3] - cy]), ('Q', p.to_vec()));
+                (cx, cy) = (p[2], p[3]);
+            }
+            Cmd::A { rx, ry, rot, large, sweep, x, y } => {
+                let (x, y) = (q(x), q(y));
+                let flags = |v: Vec<i64>| {
+                    let mut s: Vec<String> = vec![num(q(rx), dec), num(q(ry), dec), num(rot, 3), (large as u8).to_string(), (sweep as u8).to_string()];
+                    s.extend(v.iter().map(|&n| num(n, dec)));
+                    s
+                };
+                let (r, a) = (flags(vec![x - cx, y - cy]), flags(vec![x, y]));
+                let len = |v: &Vec<String>| v.iter().map(|s| s.len() + 1).sum::<usize>();
+                if len(&a) < len(&r) {
+                    w.emit('A', a);
+                } else {
+                    w.emit('a', r);
+                }
+                (cx, cy) = (x, y);
+            }
+            Cmd::Z => {
+                w.emit('z', vec![]);
+                (cx, cy) = (sx, sy);
+            }
+        }
+    }
+    w.out
+}
+
+fn hex(c: [u8; 4]) -> String {
+    let h = format!("{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    let b = h.as_bytes();
+    if b[0] == b[1] && b[2] == b[3] && b[4] == b[5] {
+        format!("#{}{}{}", b[0] as char, b[2] as char, b[4] as char)
+    } else {
+        format!("#{h}")
+    }
+}
+
+/// Decimal places that keep coordinates within about a twentieth of a pixel
+/// at 4096 px across, so rounding never shows.
+fn decimals(long_side: f64) -> u32 {
+    let unit = long_side / 4096.0 / 20.0;
+    (-unit.log10()).ceil().clamp(0.0, 3.0) as u32
+}
+
+pub fn tidy(text: &str, o: &Opts) -> Result<Tidied, String> {
+    let (root, mut shapes) = read(text)?;
+    let paths_in = shapes.len();
+    let (colours_in, colours_out) = snap_colours(&mut shapes, o.merge);
+    let groups = group(shapes);
+    let dec = decimals(root.long_side);
+    let all_evenodd = groups.iter().all(|g| g.evenodd);
+    let mut svg = String::from("<svg xmlns=\"http://www.w3.org/2000/svg\"");
+    for (k, v) in &root.attrs {
+        svg.push_str(&format!(" {k}=\"{v}\""));
+    }
+    if all_evenodd {
+        svg.push_str(" fill-rule=\"evenodd\"");
+    }
+    svg.push('>');
+    for g in &groups {
+        svg.push_str("<path");
+        if g.fill[..3] != [0, 0, 0] {
+            svg.push_str(&format!(" fill=\"{}\"", hex(g.fill)));
+        }
+        if g.fill[3] < 255 {
+            svg.push_str(&format!(" fill-opacity=\"{}\"", num((g.fill[3] as i64 * 1000 + 127) / 255, 3)));
+        }
+        if g.evenodd && !all_evenodd {
+            svg.push_str(" fill-rule=\"evenodd\"");
+        }
+        svg.push_str(&format!(" d=\"{}\"/>", path_data(&g.cmds, dec)));
+    }
+    svg.push_str("</svg>\n");
+    Ok(Tidied { svg, paths_in, paths_out: groups.len(), colours_in, colours_out })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers() {
+        assert_eq!(num(1500, 3), "1.5");
+        assert_eq!(num(-500, 3), "-.5");
+        assert_eq!(num(0, 3), "0");
+        assert_eq!(num(2000, 0), "2");
+        assert_eq!(num(1499, 0), "1");
+    }
+
+    #[test]
+    fn joins_and_shortens() {
+        let svg = r##"<?xml version="1.0"?><svg viewBox="0 0 100 100" width="100%" height="100%">
+            <path d="M0,0L100,0l0,100L0,100Z" fill="#FEFEFE"/>
+            <path d="M10,10l5,0l0,5l-5,0Z" fill="#000000" transform="translate(1,1)"/>
+            <path d="M50,50l5,0l0,5l-5,0Z" fill="#010101"/></svg>"##;
+        let t = tidy(svg, &Opts::default()).unwrap();
+        assert_eq!(t.paths_out, 2);
+        assert_eq!(t.colours_out, 2);
+        assert!(t.svg.contains(r#"<path d="M11 11h5v5h-5zm39 39h5v5h-5z"/>"#), "{}", t.svg);
+    }
+
+    #[test]
+    fn keeps_overlapping_order() {
+        // Red over black over red: the second red overlaps the black, so it can't join the first.
+        let svg = r##"<svg viewBox="0 0 10 10"><path fill="red" d="M0 0h4v4H0z"/><path d="M2 2h4v4H2z"/><path fill="red" d="M3 3h4v4H3z"/></svg>"##;
+        assert_eq!(tidy(svg, &Opts::default()).unwrap().paths_out, 3);
+    }
+
+    #[test]
+    fn declines_strokes() {
+        let svg = r##"<svg viewBox="0 0 10 10"><path stroke="#000" d="M0 0h4"/></svg>"##;
+        assert!(tidy(svg, &Opts::default()).is_err());
+    }
+}

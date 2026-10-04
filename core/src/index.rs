@@ -172,7 +172,9 @@ fn snap_edges(r: &Image, pal: &[Rgb], idx: &mut [i16]) {
 /// it most. Status per pixel: 0 unseen, 1 settled small, 2 part of a big patch,
 /// 3 in the patch being grown. A patch that grows past `min_area`, or touches a
 /// pixel already known to be in a big patch, stops early, so the work stays linear.
-pub fn remove_specks(idx: &mut [i16], w: usize, h: usize, min_area: usize) {
+/// With `slivers`, long thin patches stay: in pen and ink those are the gaps
+/// between strokes, and filling them darkens the drawing.
+pub fn remove_specks(idx: &mut [i16], w: usize, h: usize, min_area: usize, slivers: bool) {
     if min_area < 2 {
         return;
     }
@@ -226,6 +228,12 @@ pub fn remove_specks(idx: &mut [i16], w: usize, h: usize, min_area: usize) {
             }
             continue;
         }
+        if slivers && thin(&q[..tail], w) {
+            for &j in &q[..tail] {
+                status[j] = 1;
+            }
+            continue;
+        }
         votes.clear();
         for &j in &q[..tail] {
             for k in nbs(j).into_iter().flatten() {
@@ -249,6 +257,21 @@ pub fn remove_specks(idx: &mut [i16], w: usize, h: usize, min_area: usize) {
             status[j] = 1;
         }
     }
+}
+
+/// A patch at least 4 px long whose bounding box is mostly empty: its longer
+/// side squared is at least three times its area. A round dot never is.
+fn thin(patch: &[usize], w: usize) -> bool {
+    let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
+    for &j in patch {
+        let (x, y) = (j % w, j / w);
+        x0 = x0.min(x);
+        x1 = x1.max(x);
+        y0 = y0.min(y);
+        y1 = y1.max(y);
+    }
+    let extent = (x1 - x0 + 1).max(y1 - y0 + 1);
+    extent >= 4 && extent * extent >= 3 * patch.len()
 }
 
 /// Majority filter: each pixel takes the most common colour of its 3x3
@@ -301,7 +324,7 @@ pub fn index_map(r: &Image, o: &Opts, p: &Pal) -> Vec<i16> {
     if o.clean > 0 {
         idx = clean_up(idx, r.w, r.h, o.clean, p.pal.len());
     }
-    remove_specks(&mut idx, r.w, r.h, speck_area(o, r.w, r.h));
+    remove_specks(&mut idx, r.w, r.h, speck_area(o, r.w, r.h), o.slivers);
     idx
 }
 

@@ -15,6 +15,7 @@ pub mod index;
 pub mod palette;
 pub mod png;
 pub mod potrace;
+pub mod tidy;
 pub mod trace;
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,16 @@ pub struct Choices {
     pub keep: Vec<Rgb>,
     #[serde(default)]
     pub drop: Vec<Rgb>,
+}
+
+/// Redraw: rasterise and trace again. Tidy: keep an SVG's own outlines and only
+/// merge colours, join paths and rewrite the path data (see [`tidy`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Method {
+    #[default]
+    Redraw,
+    Tidy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +87,12 @@ pub struct Opts {
     pub clean: u32,
     /// Restrict blended edge pixels to the colours meeting there.
     pub edges: bool,
+    /// Speck removal spares long thin patches (gaps between pen strokes, fine
+    /// lines) and only removes compact ones.
+    #[serde(default)]
+    pub slivers: bool,
+    #[serde(default)]
+    pub method: Method,
     #[serde(default)]
     pub choices: Choices,
 }
@@ -96,6 +113,8 @@ impl Default for Opts {
             max_col: 24,
             clean: 0,
             edges: true,
+            slivers: false,
+            method: Method::Redraw,
             choices: Choices::default(),
         }
     }
