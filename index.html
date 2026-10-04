@@ -93,7 +93,8 @@
   .stage{aspect-ratio:1/1;overflow:auto;background-color:var(--paper);
     background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
     background-size:16px 16px;}
-  .stage img{display:block;width:calc(var(--zoom,1) * 100%);max-width:none;height:auto;image-rendering:auto}
+  .stage img{display:block;width:calc(var(--zoom,1) * 100%);max-width:none;height:auto;image-rendering:auto;-webkit-user-drag:none;user-select:none}
+  .stage.zoomed{cursor:grab} .stage.panning{cursor:grabbing}
   .stage img.pix{image-rendering:pixelated}
   .stage img:not([src]){display:none}
   .view-foot{display:flex;flex-wrap:wrap;gap:4px 16px;padding:8px 12px;border-top:1px solid var(--line);font-family:var(--mono);font-size:.78rem;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -183,7 +184,7 @@
       <div class="field colour-only">
         <div class="field-head"><label for="maxCol">Most colours</label><span class="val" id="maxColV">24</span></div>
         <input id="maxCol" type="range" min="2" max="24" step="1" value="24">
-        <p class="hint">For photos, gradients and AI images. The closest colours merge until this many are left; small distinct ones, like an eye, are kept.</p>
+        <p class="hint">For photos, gradients and AI images. The closest colours merge until this many are left; small distinct ones, like an eye, are kept. A removed background counts as one of them.</p>
       </div>
 
       <div class="field colour-only">
@@ -361,7 +362,7 @@
     method: 'redraw',      // 'redraw' | 'tidy'
     tidyWhy: null,         // why Tidy can't read this SVG, or null when it can
     choices: { keep: [], drop: [] }, // colours the viewer locked in or left out
-    result: null,          // {svg, bytes, points, layers, diffPct, diffUrl, opts}
+    result: null,          // {svg, bytes, points, layers, diffPct, diffPng, opts}
     view: 'result',
     run: 0,
     urls: [],
@@ -376,6 +377,15 @@
   const toHex = (c) => `#${hex2(c[0])}${hex2(c[1])}${hex2(c[2])}`;
   const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
   function blobUrl(blob) { const u = URL.createObjectURL(blob); state.urls.push(u); return u; }
+  // Each view holds one object URL, freed when the view moves on, so a long
+  // session (every nudge retraces; Find smallest makes a dozen diffs) doesn't
+  // pile up images until WebKit runs short and shows a broken one.
+  const shown = {};
+  function showBlob(id, blob) {
+    if (shown[id]) URL.revokeObjectURL(shown[id]);
+    shown[id] = URL.createObjectURL(blob);
+    $(id).src = shown[id];
+  }
   function loadImage(url) {
     return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("That image couldn't be read.")); i.src = url; });
   }
@@ -423,7 +433,9 @@
     let img, w, h;
     if (source.kind === 'svg') {
       const s = sizedSvg(source.text, N); w = s.w; h = s.h;
-      img = await loadImage(blobUrl(new Blob([s.text], { type: 'image/svg+xml' })));
+      const u = URL.createObjectURL(new Blob([s.text], { type: 'image/svg+xml' }));
+      // Decoded once drawn, so the URL can go as soon as the image has loaded.
+      try { img = await loadImage(u); } finally { setTimeout(() => URL.revokeObjectURL(u), 0); }
     } else {
       img = state.cache.img || (state.cache.img = await loadImage(blobUrl(source.blob)));
       const sc = N / Math.max(img.naturalWidth, img.naturalHeight);
@@ -577,10 +589,10 @@
     o = { ...o, mode: 'colour' };
     const t = await core.tidy(state.source.text, o);
     if (t.unsupported) throw new Error(`Tidy can't keep this SVG's outlines: ${t.unsupported}. Use Redraw.`);
-    // Compare against a palette that ignores the colour choices, so a colour
-    // merged or left out counts as a change rather than being hidden.
-    const c = { ...o, choices: { keep: [], drop: [] }, maxCol: 24, merge: Math.min(o.merge, 16) };
-    const cmp = await compare(t.svg, c, await paletteFor(c));
+    // Scored like Redraw, against the palette the viewer chose, so Find smallest
+    // weighs both methods by the same rule: colours you merge on purpose don't
+    // count as a difference, lost shapes do.
+    const cmp = await compare(t.svg, o, await paletteFor(o));
     return { svg: t.svg, bytes: new Blob([t.svg]).size, points: countPoints(t.svg), layers: t.pathsOut, tidy: t, ...cmp, opts: o };
   }
 
@@ -592,7 +604,7 @@
     const aIdx = await cached(k, () => core.sourceIndex(a, o, p));
     const b = await raster({ kind: 'svg', text: svg }, CMP, mono);
     const { diffPct, png } = await core.compare(aIdx, a, b, o, p);
-    return { diffPct, diffUrl: blobUrl(new Blob([png], { type: 'image/png' })) };
+    return { diffPct, diffPng: png };
   }
 
   function showOriginal() {
@@ -616,13 +628,13 @@
     if (origView !== 'quant' || !state.source) return;
     try {
       const q = await quantize(1024);
-      $('imgA').src = blobUrl(new Blob([q.png], { type: 'image/png' })); $('imgA').alt = 'The original reduced to the palette colours';
+      showBlob('imgA', new Blob([q.png], { type: 'image/png' })); $('imgA').alt = 'The original reduced to the palette colours';
     } catch (e) { status(e.message || String(e)); }
   }
   function showOrigView() {
     $('origSeg').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.v === origView)));
     if (origView === 'quant') showQuantPreview();
-    else if (state.source) { const blob = state.source.kind === 'svg' ? new Blob([state.source.text], { type: 'image/svg+xml' }) : state.source.blob; $('imgA').src = blobUrl(blob); $('imgA').alt = 'The original artwork'; }
+    else if (state.source) { const blob = state.source.kind === 'svg' ? new Blob([state.source.text], { type: 'image/svg+xml' }) : state.source.blob; showBlob('imgA', blob); $('imgA').alt = 'The original artwork'; }
   }
   $('origSeg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; origView = b.dataset.v; showOrigView(); });
 
@@ -671,8 +683,8 @@
   function renderView() {
     const r = state.result; if (!r) return;
     const img = $('imgB');
-    if (state.view === 'diff') { img.src = r.diffUrl; img.classList.add('pix'); img.alt = 'Pixels that changed, in red, over a faint copy of the original'; }
-    else { img.src = blobUrl(new Blob([r.svg], { type: 'image/svg+xml' })); img.classList.remove('pix'); img.alt = 'The slimmed artwork'; }
+    if (state.view === 'diff') { showBlob('imgB', new Blob([r.diffPng], { type: 'image/png' })); img.classList.add('pix'); img.alt = 'Pixels that changed, in red, over a faint copy of the original'; }
+    else { showBlob('imgB', new Blob([r.svg], { type: 'image/svg+xml' })); img.classList.remove('pix'); img.alt = 'The slimmed artwork'; }
     $('legend').hidden = state.view !== 'diff';
   }
 
@@ -900,13 +912,36 @@
   const stages = [$('stageA'), $('stageB')];
   $('zoom').addEventListener('input', (e) => {
     const z = Number(e.target.value); $('zoomV').textContent = `${z}×`;
-    stages.forEach((s) => s.style.setProperty('--zoom', z));
+    stages.forEach((s) => { s.style.setProperty('--zoom', z); s.classList.toggle('zoomed', z > 1); });
   });
-  let syncing = false;
+  // Keep both views at the same spot. Copying only when they differ means the
+  // echo from the other view does nothing, with no flag that can get stuck.
   stages.forEach((s, i) => s.addEventListener('scroll', () => {
-    if (syncing) { syncing = false; return; }
-    const o = stages[1 - i]; syncing = true; o.scrollLeft = s.scrollLeft; o.scrollTop = s.scrollTop;
+    const o = stages[1 - i];
+    if (o.scrollLeft !== s.scrollLeft) o.scrollLeft = s.scrollLeft;
+    if (o.scrollTop !== s.scrollTop) o.scrollTop = s.scrollTop;
   }));
+  // Drag to pan when zoomed in; scrolling with a trackpad or wheel works too.
+  stages.forEach((s) => {
+    let drag = null;
+    s.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || s.scrollWidth <= s.clientWidth && s.scrollHeight <= s.clientHeight) return;
+      drag = { x: e.clientX, y: e.clientY, left: s.scrollLeft, top: s.scrollTop };
+      s.setPointerCapture(e.pointerId); s.classList.add('panning'); e.preventDefault();
+    });
+    s.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      s.scrollLeft = drag.left - (e.clientX - drag.x); s.scrollTop = drag.top - (e.clientY - drag.y);
+    });
+    const end = () => { drag = null; s.classList.remove('panning'); };
+    s.addEventListener('pointerup', end); s.addEventListener('pointercancel', end);
+  });
+  // If the original ever fails to show (WebKit draws a "?"), load it again once.
+  $('imgA').addEventListener('error', () => {
+    if (origView !== 'orig' || !state.source || $('imgA').dataset.retried) return;
+    $('imgA').dataset.retried = '1'; showOrigView();
+  });
+  $('imgA').addEventListener('load', () => { delete $('imgA').dataset.retried; });
 
   const drop = $('drop'), input = $('fileInput');
   drop.addEventListener('click', () => input.click());

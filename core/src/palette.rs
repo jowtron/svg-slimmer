@@ -138,7 +138,12 @@ fn find_palette(r: &Image, merge: f64, declared: &[Rgb], max_col: usize, choices
             }
         } else {
             match picked(&shown, &keep) {
-                Some(k) => pal.push(Entry { c: keep[k], n: c.1, pin: true }),
+                // Shades of one locked colour share its entry rather than each
+                // taking a slot of their own.
+                Some(k) => match pal.iter_mut().find(|p| p.pin && dist2(&p.c, &keep[k]) == 0.0) {
+                    Some(p) => p.n += c.1,
+                    None => pal.push(Entry { c: keep[k], n: c.1, pin: true }),
+                },
                 None => pal.push(Entry { c: c.0, n: c.1, pin: false }),
             }
         }

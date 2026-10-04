@@ -497,11 +497,15 @@ fn seen2(a: &[u8; 4], b: &[u8; 4]) -> f64 {
 }
 
 /// One palette entry: a real fill colour from the file (Tidy never averages),
-/// the area it now covers, and whether the viewer locked it in.
+/// the area it now covers, and whether it may not merge away: locked by the
+/// viewer, or the removed background's colour, which keeps a slot so the same
+/// colour inside the artwork stays (as in Redraw).
 struct Entry {
     c: [u8; 4],
     n: f64,
     pin: bool,
+    locked: bool,
+    background: bool,
     /// The fills folded into it.
     fills: Vec<[u8; 4]>,
 }
@@ -509,9 +513,10 @@ struct Entry {
 /// Choose the colours to keep and map every fill onto one of them, as Redraw's
 /// palette does: fills within `merge` group under the one covering the most
 /// area; locked colours stay; left-out colours go to the nearest kept one; the
-/// closest pair merges (weighted by the smaller) until `max_col` are left.
-/// Fills with different opacity never merge.
-fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
+/// closest pair merges (weighted by the smaller) until `o.max_col` are left.
+/// A removed background's colour counts as one of them. Fills with different
+/// opacity never merge.
+fn choose_colours(shapes: &mut [Shape], o: &Opts, bg: Option<[u8; 4]>) -> (usize, Pal) {
     let mut weight: Vec<([u8; 4], f64)> = Vec::new();
     for s in shapes.iter() {
         match weight.iter_mut().find(|w| w.0 == s.fill) {
@@ -532,18 +537,27 @@ fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
         let best = weight.iter().filter(|w| d2(&rgb(&w.0), k) <= SAME).min_by(|a, b| d2(&rgb(&a.0), k).partial_cmp(&d2(&rgb(&b.0), k)).unwrap());
         if let Some(&(c, n)) = best {
             if !cand.iter().any(|e| e.c == c) {
-                cand.push(Entry { c, n, pin: true, fills: vec![c] });
+                cand.push(Entry { c, n, pin: true, locked: true, background: false, fills: vec![c] });
             }
         }
     }
+    // The background's slot starts empty; its colour inside the artwork joins it below.
+    if let Some(b) = bg {
+        match cand.iter_mut().find(|e| d2(&rgb(&e.c), &rgb(&b)) <= SAME) {
+            Some(e) => e.background = true,
+            None => cand.push(Entry { c: b, n: 0.0, pin: true, locked: false, background: true, fills: vec![] }),
+        }
+    }
     for &(c, n) in &weight {
-        if cand.iter().any(|e| e.pin && e.c == c) {
+        if cand.iter().any(|e| e.locked && e.c == c) {
             continue;
         }
         // Shades of a locked colour join it; others join the nearest group within the merge distance.
         let near = |e: &&mut Entry| {
             let d = d2(&rgb(&e.c), &rgb(&c));
-            e.c[3] == c[3] && ((e.pin && d <= SAME) || (o.merge > 0.0 && d <= m2))
+            // The background's slot only takes its own shades, so it can't swallow
+            // a nearby colour such as cream paper.
+            e.c[3] == c[3] && ((e.pin && d <= SAME) || (!e.background && o.merge > 0.0 && d <= m2))
         };
         let join = cand.iter_mut().filter(near).min_by(|a, b| d2(&rgb(&a.c), &rgb(&c)).partial_cmp(&d2(&rgb(&b.c), &rgb(&c))).unwrap());
         match join {
@@ -551,7 +565,7 @@ fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
                 e.n += n;
                 e.fills.push(c);
             }
-            None => cand.push(Entry { c, n, pin: false, fills: vec![c] }),
+            None => cand.push(Entry { c, n, pin: false, locked: false, background: false, fills: vec![c] }),
         }
     }
     let (mut pal, mut removed): (Vec<Entry>, Vec<Entry>) = cand.into_iter().partition(|e| !picked(&e.c, &o.choices.drop));
@@ -565,13 +579,15 @@ fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
         }
         x.n += y.n;
         x.pin |= y.pin;
+        x.locked |= y.locked;
+        x.background |= y.background;
         x.fills.extend(y.fills);
     };
     while pal.len() > o.max_col.max(1) {
         let (mut bi, mut bj, mut best) = (usize::MAX, 0, f64::INFINITY);
         for i in 0..pal.len() {
             for j in i + 1..pal.len() {
-                if (pal[i].pin && pal[j].pin) || pal[i].c[3] != pal[j].c[3] {
+                if (pal[i].pin && pal[j].pin) || pal[i].background || pal[j].background || pal[i].c[3] != pal[j].c[3] {
                     continue;
                 }
                 // The colour that changes is the unlocked one, so its area is what counts;
@@ -597,7 +613,7 @@ fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
         }
     }
     for e in &removed {
-        let near = pal.iter().min_by(|a, b| seen2(&a.c, &e.c).partial_cmp(&seen2(&b.c, &e.c)).unwrap()).unwrap();
+        let near = pal.iter().filter(|p| !p.fills.is_empty() || !p.background).min_by(|a, b| seen2(&a.c, &e.c).partial_cmp(&seen2(&b.c, &e.c)).unwrap()).unwrap();
         for f in &e.fills {
             to.insert(*f, near.c);
         }
@@ -605,7 +621,9 @@ fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
     for s in shapes.iter_mut() {
         s.fill = to[&s.fill];
     }
-    // The chips: kept colours biggest first, then fills that lost their own colour.
+    // The chips: kept colours biggest first (the background only if the
+    // artwork uses its colour), then fills that lost their own colour.
+    pal.retain(|e| !e.fills.is_empty());
     pal.sort_by(|a, b| b.n.partial_cmp(&a.n).unwrap());
     let mut merged: Vec<Share> = Vec::new();
     for e in &pal {
@@ -621,7 +639,7 @@ fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
         bg: -1,
         order: (0..pal.len()).collect(),
         share: pal.iter().map(|e| e.n / total).collect(),
-        pinned: pal.iter().map(|e| e.pin).collect(),
+        pinned: pal.iter().map(|e| e.locked).collect(),
         merged,
         removed: removed.iter().map(|e| Share { c: rgb(&e.c), share: e.n / total }).collect(),
     };
@@ -632,7 +650,7 @@ fn choose_colours(shapes: &mut [Shape], o: &Opts) -> (usize, Pal) {
 /// canvas or, failing that, the colour with the most area along the edges.
 /// Only its shapes that touch an edge go, so the same colour inside the
 /// artwork, such as the white of an eye, stays. Returns how many went.
-fn remove_background(shapes: &mut Vec<Shape>, canvas: &Bbox, merge: f64) -> usize {
+fn remove_background(shapes: &mut Vec<Shape>, canvas: &Bbox, merge: f64) -> (usize, Option<[u8; 4]>) {
     let slack = ((canvas.x1 - canvas.x0).max(canvas.y1 - canvas.y0) / 1000).max(1);
     let edge = |b: &Bbox| b.x0 <= canvas.x0 + slack || b.y0 <= canvas.y0 + slack || b.x1 >= canvas.x1 - slack || b.y1 >= canvas.y1 - slack;
     let covers = |b: &Bbox| b.x0 <= canvas.x0 + slack && b.y0 <= canvas.y0 + slack && b.x1 >= canvas.x1 - slack && b.y1 >= canvas.y1 - slack;
@@ -645,7 +663,7 @@ fn remove_background(shapes: &mut Vec<Shape>, canvas: &Bbox, merge: f64) -> usiz
             }
             match area.into_iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(b.0.cmp(&a.0))) {
                 Some((c, _)) => c,
-                None => return 0,
+                None => return (0, None),
             }
         }
     };
@@ -654,7 +672,8 @@ fn remove_background(shapes: &mut Vec<Shape>, canvas: &Bbox, merge: f64) -> usiz
     let near = merge.max(8.0).powi(2);
     let before = shapes.len();
     shapes.retain(|s| !(s.fill[3] == bg[3] && d2(&rgb(&s.fill), &rgb(&bg)) <= near && edge(&s.bbox)));
-    before - shapes.len()
+    let gone = before - shapes.len();
+    (gone, (gone > 0).then_some(bg))
 }
 
 struct Group {
@@ -873,11 +892,11 @@ pub fn tidy(text: &str, o: &Opts) -> Result<Tidied, String> {
     let (root, mut shapes) = read(text)?;
     let paths_in = shapes.len();
     // The background goes first, so its area can't sway which colours stay.
-    let background = if o.edge_bg { remove_background(&mut shapes, &root.canvas, o.merge) } else { 0 };
+    let (background, bg) = if o.edge_bg { remove_background(&mut shapes, &root.canvas, o.merge) } else { (0, None) };
     if shapes.is_empty() {
         return Err("nothing is left once the background is removed".into());
     }
-    let (colours_in, palette) = choose_colours(&mut shapes, o);
+    let (colours_in, palette) = choose_colours(&mut shapes, o, bg);
     let colours_out = palette.pal.len();
     let groups = group(shapes);
     let dec = decimals(root.long_side);
@@ -959,10 +978,10 @@ mod tests {
         // The background goes first, so the cream envelope is no longer swallowed by white.
         let t = tidy(svg, &o).unwrap();
         assert!(t.palette.pal.contains(&[0xef, 0xec, 0xe7]), "{:?}", t.palette.pal);
-        // Two colours, eye locked: grey folds away, eye and cream stay.
+        // Three colours counting the removed background, eye locked: grey folds away, eye and cream stay.
         let keep = Choices { keep: vec![[0xfa, 0xdf, 0x1c]], drop: vec![] };
-        let t = tidy(svg, &Opts { merge: 0.0, max_col: 2, choices: keep, ..o.clone() }).unwrap();
-        assert_eq!(t.palette.pal.len(), 2);
+        let t = tidy(svg, &Opts { merge: 0.0, max_col: 3, choices: keep, ..o.clone() }).unwrap();
+        assert_eq!(t.palette.pal.len(), 2, "{:?}", t.palette.pal);
         assert!(t.palette.pal.contains(&[0xfa, 0xdf, 0x1c]));
         // The big grey went to the cream, not to the tiny locked eye.
         let eye = t.palette.pal.iter().position(|c| *c == [0xfa, 0xdf, 0x1c]).unwrap();
@@ -976,6 +995,16 @@ mod tests {
         let keep = Choices { keep: vec![[0xef, 0xec, 0xe7]], drop: vec![] };
         let t = tidy(svg, &Opts { merge: 120.0, edge_bg: false, choices: keep, ..Opts::default() }).unwrap();
         assert!(t.palette.pal.contains(&[0xef, 0xec, 0xe7]), "{:?}", t.palette.pal);
+    }
+
+    #[test]
+    fn background_colour_inside_stays() {
+        // White canvas, black body, white eye inside it: with 2 colours and the
+        // background removed, the eye stays white rather than turning black.
+        let svg = r##"<svg viewBox="0 0 100 100"><path fill="#fff" d="M0 0h100v100H0z"/><path d="M20 20h40v40H20z"/><path fill="#fff" d="M30 30h5v5h-5z"/><path fill="#777" d="M70 70h5v5h-5z"/></svg>"##;
+        let t = tidy(svg, &Opts { edge_bg: true, max_col: 2, merge: 0.0, ..Opts::default() }).unwrap();
+        assert!(t.svg.contains(r##"fill="#fff""##), "{}", t.svg);
+        assert!(!t.svg.contains("#777"), "{}", t.svg);
     }
 
     #[test]
