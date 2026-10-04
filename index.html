@@ -93,6 +93,15 @@
   .stage{aspect-ratio:1/1;overflow:auto;background-color:var(--paper);
     background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
     background-size:16px 16px;}
+  /* A chosen preview background replaces the grid; cosmetic only. */
+  .stage.plain{background-image:none;background-color:var(--stage-bg)}
+  .bgpick{display:inline-flex;align-items:center;gap:8px;margin-left:auto;flex:none}
+  .bgpick .seg{flex:none}
+  .bgpick .seg button{padding:4px 10px;font-size:.76rem}
+  .bgpick input[type=color]{-webkit-appearance:none;appearance:none;flex:none;box-sizing:border-box;width:30px;min-width:30px;max-width:30px;height:26px;padding:2px;border:1px solid var(--line);border-radius:6px;background:var(--panel);cursor:pointer}
+  .bgpick input[type=color]::-webkit-color-swatch-wrapper{padding:0}
+  .bgpick input[type=color]::-webkit-color-swatch{border:0;border-radius:4px}
+  .bgpick input[type=color].on{outline:2px solid var(--accent);outline-offset:1px}
   .stage img{display:block;width:calc(var(--zoom,1) * 100%);max-width:none;height:auto;image-rendering:auto;-webkit-user-drag:none;user-select:none}
   .stage.zoomed{cursor:grab} .stage.panning{cursor:grabbing}
   .stage img.pix{image-rendering:pixelated}
@@ -325,6 +334,15 @@
         <input id="zoom" type="range" min="1" max="8" step="0.5" value="1">
         <span class="val" id="zoomV">1×</span>
         <span class="legend" id="legend" hidden><i></i> pixels that changed by more than a hairline</span>
+        <span class="bgpick">
+          <span id="bgLabel">Background</span>
+          <span class="seg" role="group" aria-labelledby="bgLabel" id="bgSeg">
+            <button type="button" data-v="grid" aria-pressed="true">Grid</button>
+            <button type="button" data-v="#ffffff">White</button>
+            <button type="button" data-v="#000000">Black</button>
+          </span>
+          <input type="color" id="bgColour" value="#2b59c3" title="Any colour behind the artwork (only for viewing; the file doesn't change)" aria-label="Any background colour">
+        </span>
       </div>
 
       <details class="panel code">
@@ -914,6 +932,19 @@
     const z = Number(e.target.value); $('zoomV').textContent = `${z}×`;
     stages.forEach((s) => { s.style.setProperty('--zoom', z); s.classList.toggle('zoomed', z > 1); });
   });
+  // Preview background: the grid, or a plain colour to see the artwork against.
+  // Only for viewing, and remembered on this device.
+  function setBackground(v) {
+    const plain = v !== 'grid';
+    stages.forEach((st) => { st.classList.toggle('plain', plain); st.style.setProperty('--stage-bg', plain ? v : ''); });
+    $('bgSeg').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === v)));
+    $('bgColour').classList.toggle('on', plain && !['#ffffff', '#000000'].includes(v));
+    if (plain && !['#ffffff', '#000000'].includes(v)) $('bgColour').value = v;
+    try { localStorage.setItem('svgslim-bg', v); } catch { /* storage blocked */ }
+  }
+  $('bgSeg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setBackground(b.dataset.v); });
+  $('bgColour').addEventListener('input', (e) => setBackground(e.target.value));
+  try { const v = localStorage.getItem('svgslim-bg'); if (v && (v === 'grid' || /^#[0-9a-f]{6}$/i.test(v))) setBackground(v); } catch { /* storage blocked */ }
   // Keep both views at the same spot. Copying only when they differ means the
   // echo from the other view does nothing, with no flag that can get stuck.
   stages.forEach((s, i) => s.addEventListener('scroll', () => {
