@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "svg-slimmer",
+  // Josephderrickrepairs account; the API token sees five, so pin it.
+  "account_id": "41a62277421a452c6499884fd17b3c8d",
   "compatibility_date": "2026-09-28",
   // Static page only: no Worker script, just the built assets.
   "assets": { "directory": "./dist" },
