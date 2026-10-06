@@ -8,7 +8,7 @@ Auto-tracers such as VTracer, and exports from design tools, often produce SVGs 
 
 ## What it does
 
-- **Opens SVGs and bitmaps** (PNG, JPEG, WebP). Drop a file anywhere on the page, pick one, or paste SVG code.
+- **Opens SVGs and bitmaps** (PNG, JPEG, WebP). Drop a file anywhere on the page, pick one, or paste SVG code. The desktop app also pastes an SVG copied in Inkscape or Finder; a browser only gets Inkscape's small preview picture, so on the web open or drop the file instead.
 - **Keeps colours.** It finds the palette, traces each colour as a stacked layer (each layer runs under the ones above it, so no gaps open between colours), and snaps to the exact colours an SVG declares.
 - **Lets you choose the palette.** Set the most colours to keep and how similar two colours must be to merge. Click a colour once to lock it in, so it survives however far you reduce; again to leave it out; a third time to hand it back. Each colour shows its share of the artwork.
 - **Handles AI images and upscales.** Blended edge pixels only take one of the colours actually meeting at that edge, so no fringe of a third colour appears. Specks and upscaler halos are removed before tracing, and the background is removed only where it touches the border, so white inside the artwork stays white.
