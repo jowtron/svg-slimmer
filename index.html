@@ -983,12 +983,23 @@
   ['dragenter', 'dragover'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || !e.relatedTarget) drop.classList.remove('over'); }));
   document.addEventListener('drop', (e) => loadFile(e.dataTransfer && e.dataTransfer.files[0]));
-  document.addEventListener('paste', (e) => {
+  document.addEventListener('paste', async (e) => {
     if (e.target && e.target.closest && e.target.closest('input,textarea')) return;
-    const file = [...(e.clipboardData?.files || [])][0];
-    if (file) return loadFile(file);
-    const text = e.clipboardData?.getData('text') || '';
-    if (/<svg[\s>]/i.test(text)) loadSource({ kind: 'svg', text }, 'pasted.svg', new Blob([text]).size);
+    // Read everything now: clipboardData empties once the handler awaits.
+    const files = [...(e.clipboardData?.files || [])];
+    const svgFile = files.find((f) => /svg/i.test(f.type) || /\.svg$/i.test(f.name));
+    const text = [e.clipboardData?.getData('image/svg+xml'), e.clipboardData?.getData('text')].find((t) => /<svg[\s>]/i.test(t || ''));
+    const pasteSvg = (t, name = 'pasted.svg') => loadSource({ kind: 'svg', text: t }, name, new Blob([t]).size);
+    if (svgFile) return loadFile(svgFile);
+    if (text) return pasteSvg(text);
+    // Drawing apps (Inkscape and others) offer the page only a small PNG preview of a
+    // copied SVG, and a file copied in Finder arrives as its icon. The desktop app
+    // can read the real SVG from the system clipboard.
+    const tauri = window.__TAURI_INTERNALS__;
+    if (tauri) {
+      try { const svg = await tauri.invoke('clipboard_svg'); if (svg) return pasteSvg(svg[1], svg[0]); } catch {}
+    }
+    if (files[0]) loadFile(files[0]);
   });
 
   $('autoBtn').addEventListener('click', findSmallest);

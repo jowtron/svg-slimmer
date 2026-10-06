@@ -3292,6 +3292,8 @@ dependencies = [
 name = "svg-slimmer-app"
 version = "0.1.0"
 dependencies = [
+ "objc2-app-kit",
+ "objc2-foundation",
  "percent-encoding",
  "slimmer-core",
  "tauri",

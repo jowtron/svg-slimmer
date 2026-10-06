@@ -259,12 +259,15 @@ fn paint(parent: Paint, attrs: &[(&str, &str)], keep: &[&str]) -> Result<Paint, 
                 p.dy += t.f;
             }
             "stroke" if v.trim() == "none" => {}
+            // Any real stroke is refused below, so stroke settings left behind on a
+            // filled path (Inkscape writes stroke-width on everything) draw nothing.
+            "stroke-width" | "stroke-linecap" | "stroke-linejoin" | "stroke-miterlimit" | "stroke-dasharray" | "stroke-dashoffset" => {}
             "opacity" | "fill-opacity" if v.trim().parse::<f64>() == Ok(1.0) => {}
             "id" | "class" | "version" | "baseProfile" | "xml:space" | "data-name" => {}
             // Namespaced attributes are editor notes (sodipodi:, inkscape:) or
             // xml:space; none of them changes what is drawn.
             k if k.starts_with("xmlns") || k.starts_with("data-") || k.contains(':') || keep.contains(&k) => {}
-            "stroke" | "stroke-width" | "opacity" | "fill-opacity" | "style" | "clip-path" | "mask" | "filter" => {
+            "stroke" | "opacity" | "fill-opacity" | "style" | "clip-path" | "mask" | "filter" => {
                 return Err(format!("it uses {k}"))
             }
             k => return Err(format!("it uses the {k} attribute")),

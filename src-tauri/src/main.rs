@@ -47,9 +47,51 @@ async fn save(app: tauri::AppHandle, request: Request<'_>) -> Result<String, Str
     Ok("saved".into())
 }
 
+/// The SVG on the clipboard, as (name, text), when web content can't see it. Inkscape
+/// and other drawing apps put the SVG under `public.svg-image` and only a small
+/// PNG preview where WebKit's paste event looks, and a file copied in Finder
+/// arrives there as its icon.
+#[tauri::command]
+fn clipboard_svg() -> Option<(String, String)> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::NSString;
+        let pb = NSPasteboard::generalPasteboard();
+        if let Some(data) = pb.dataForType(&NSString::from_str("public.svg-image")) {
+            if let Ok(text) = String::from_utf8(data.to_vec()) {
+                return Some(("pasted.svg".into(), text));
+            }
+        }
+        let url = pb.stringForType(&NSString::from_str("public.file-url"))?.to_string();
+        let path = percent_encoding::percent_decode_str(url.strip_prefix("file://")?).decode_utf8().ok()?.into_owned();
+        let path = std::path::Path::new(&path);
+        if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+            return None;
+        }
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        return Some((name, std::fs::read_to_string(path).ok()?));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 /// Self-test: with SLIMMER_SELFTEST=<image>, the page gets that image dropped on it,
 /// runs a trace, Find smallest and the Finest preset through the real UI, and
 /// reports each step here. The app prints the lines and quits.
+/// SLIMMER_SELFTEST=paste instead pastes whatever is on the clipboard, offering the
+/// page only a PNG, as WebKit does for an SVG copied in Inkscape.
+const SELFTEST_PASTE: &str = r#"(async () => {
+  const say = (line) => window.__TAURI_INTERNALS__.invoke('selftest', { line });
+  const $ = (id) => document.getElementById(id);
+  const dt = new DataTransfer();
+  dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' }));
+  document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
+  for (let i = 0; i < 300 && !$('fileName').textContent; i++) await new Promise((r) => setTimeout(r, 10));
+  await say(`pasted: ${$('fileName').textContent} | ${$('status').textContent}`);
+  await say('done');
+})();"#;
+
 const SELFTEST: &str = r#"(async () => {
   const say = (line) => window.__TAURI_INTERNALS__.invoke('selftest', { line });
   try {
@@ -88,10 +130,14 @@ fn main() {
     let selftest_file = std::env::var_os("SLIMMER_SELFTEST").map(std::path::PathBuf::from);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![core, save, selftest])
+        .invoke_handler(tauri::generate_handler![core, save, clipboard_svg, selftest])
         .on_page_load(move |webview, payload| {
             let Some(path) = &selftest_file else { return };
             if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                return;
+            }
+            if path.as_os_str() == "paste" {
+                webview.eval(SELFTEST_PASTE).expect("SLIMMER_SELFTEST: eval failed");
                 return;
             }
             let bytes = std::fs::read(path).expect("SLIMMER_SELFTEST: can't read the file");
