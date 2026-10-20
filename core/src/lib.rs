@@ -53,6 +53,18 @@ pub enum Method {
     Tidy,
 }
 
+/// With *Keep gradients*: whether a ramp whose colour no gradient fits, such
+/// as soft lighting, may become a smooth colour field instead, and how that is
+/// written: blurred squares, or a small picture the browser enlarges smoothly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Field {
+    #[default]
+    Off,
+    Squares,
+    Picture,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -102,6 +114,8 @@ pub struct Opts {
     #[serde(default)]
     pub src: usize,
     #[serde(default)]
+    pub field: Field,
+    #[serde(default)]
     pub method: Method,
     #[serde(default)]
     pub choices: Choices,
@@ -126,6 +140,7 @@ impl Default for Opts {
             slivers: false,
             gradients: false,
             src: 0,
+            field: Field::Off,
             method: Method::Redraw,
             choices: Choices::default(),
         }

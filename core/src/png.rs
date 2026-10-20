@@ -80,6 +80,45 @@ pub fn write(w: usize, h: usize, palette: &[Rgb], alpha: Option<&[u8]>, pixels: 
     out
 }
 
+/// Write a truecolour PNG, three bytes a pixel, each row filtered by its
+/// neighbours (Paeth), which suits smooth colour.
+pub fn rgb(w: usize, h: usize, pixels: &[u8]) -> Vec<u8> {
+    let rb = w * 3;
+    let mut raw = vec![0u8; (rb + 1) * h];
+    let paeth = |a: i32, b: i32, c: i32| {
+        let p = a + b - c;
+        let (pa, pb, pc) = ((p - a).abs(), (p - b).abs(), (p - c).abs());
+        if pa <= pb && pa <= pc {
+            a
+        } else if pb <= pc {
+            b
+        } else {
+            c
+        }
+    };
+    for y in 0..h {
+        let o = y * (rb + 1);
+        raw[o] = 4;
+        for i in 0..rb {
+            let at = |yy: usize, ii: usize| pixels[yy * rb + ii] as i32;
+            let a = if i >= 3 { at(y, i - 3) } else { 0 };
+            let b = if y > 0 { at(y - 1, i) } else { 0 };
+            let c = if y > 0 && i >= 3 { at(y - 1, i - 3) } else { 0 };
+            raw[o + 1 + i] = (at(y, i) - paeth(a, b, c)) as u8;
+        }
+    }
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&(w as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(h as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let idat = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
+    let mut out = vec![137, 80, 78, 71, 13, 10, 26, 10];
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &idat);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
 pub struct Quantized {
     pub png: Vec<u8>,
     pub colours: usize,

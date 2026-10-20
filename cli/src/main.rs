@@ -2,7 +2,7 @@
 
 use rayon::prelude::*;
 use resvg::{tiny_skia, usvg};
-use slimmer_core::{compare, index, palette::Pal, png, tidy, trace, Image, Method, Mode, Opts, Rgb, CMP};
+use slimmer_core::{compare, index, palette::Pal, png, tidy, trace, Field, Image, Method, Mode, Opts, Rgb, CMP};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::path::{Path, PathBuf};
@@ -36,6 +36,9 @@ Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
                           soft glows and halos blurred shapes, not flat bands.
                           Not tried by --smallest
   --background / --no-background   Remove the colour touching the border
+  --field <how>           With --gradients: soft lighting no gradient fits becomes
+                          a smooth colour field, written as blurred squares
+                          (squares) or a small enlarged picture (picture)
   --no-edges              Don't restrict blended edge pixels
   --smallest              Try detail, smoothing, straight lines, stronger colour
                           merging and (for SVGs) --tidy; keep the smallest
@@ -289,7 +292,7 @@ fn main() {
             "-q" | "--quiet" => quiet = true,
             "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" => set.push((a.clone(), String::new())),
             "--preset" | "--grid" | "--smoothing" | "--corner" | "--protect" | "--decimals" | "--colours" | "--colors" | "--merge"
-            | "--threshold" | "--specks" | "--clean" => {
+            | "--threshold" | "--specks" | "--clean" | "--field" => {
                 let v = val();
                 set.push((a.clone(), v))
             }
@@ -344,6 +347,14 @@ fn main() {
             "--tidy" => o.method = Method::Tidy,
             "--slivers" => o.slivers = true,
             "--gradients" => o.gradients = true,
+            "--field" => {
+                o.field = match v.as_str() {
+                    "squares" => Field::Squares,
+                    "picture" => Field::Picture,
+                    "off" => Field::Off,
+                    _ => fail("--field takes squares, picture or off"),
+                }
+            }
             _ => unreachable!(),
         }
     }

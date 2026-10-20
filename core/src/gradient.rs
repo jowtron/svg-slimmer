@@ -384,10 +384,15 @@ impl Sheen {
 struct Base {
     grad: Grad,
     sheen: Option<Sheen>,
+    /// When set, the colour comes from this instead of the gradient.
+    field: Option<Field>,
 }
 
 impl Base {
     fn at(&self, x: f64, y: f64) -> C3 {
+        if let Some(f) = &self.field {
+            return f.at(x, y);
+        }
         let b = self.grad.at(x, y);
         match &self.sheen {
             None => b,
@@ -716,7 +721,7 @@ fn fit_sheen(s: &Samples, inl: &[bool], geo: &Geo) -> Option<Base> {
         sp = sp.map(|v| v / 2.0);
     }
     let (stops, col, _) = fit(c[0], c[1], c[2], c[3])?;
-    Some(Base { grad: Grad { geo: geo.clone(), stops: vec![(t0, stops[0]), (1.0, stops[1])] }, sheen: Some(Sheen { c: [c[0], c[1], c[2]], col, a: c[3] }) })
+    Some(Base { grad: Grad { geo: geo.clone(), stops: vec![(t0, stops[0]), (1.0, stops[1])] }, sheen: Some(Sheen { c: [c[0], c[1], c[2]], col, a: c[3] }), field: None })
 }
 
 /// Fit a gradient robustly: refit on the pixels the last fit explains.
@@ -726,7 +731,7 @@ fn robust(s: &Samples, n: usize, radial: bool, sheen: bool) -> Option<Base> {
     let mut cs = Samples { xy: s.xy.clone(), c: s.c.clone() };
     for _ in 0..3 {
         let grad = fit_grad(&cs, &inl, n, radial)?;
-        let b = if sheen { fit_sheen(s, &inl, &grad.geo)? } else { Base { grad, sheen: None } };
+        let b = if sheen { fit_sheen(s, &inl, &grad.geo)? } else { Base { grad, sheen: None, field: None } };
         inl = inliers(s, &|x, y| b.at(x, y));
         // Take the sheen out of the colours before refitting the gradient under it.
         if let Some(sh) = &b.sheen {
@@ -746,7 +751,7 @@ fn flat(s: &Samples) -> Base {
         let mut v: Vec<f64> = s.c.iter().map(|c| c[ch]).collect();
         c[ch] = percentile(&mut v, 0.5);
     }
-    Base { grad: Grad { geo: Geo::Flat, stops: vec![(0.0, c)] }, sheen: None }
+    Base { grad: Grad { geo: Geo::Flat, stops: vec![(0.0, c)] }, sheen: None, field: None }
 }
 
 /// The simplest model that is nearly as good as the best one.
@@ -771,6 +776,236 @@ fn best_base(s: &Samples) -> (Base, f64) {
     let mut ok: Vec<&(f64, f64, Base)> = scored.iter().filter(|c| c.1 <= best * 1.1 + 0.3).collect();
     ok.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     (ok[0].2.clone(), ok[0].1)
+}
+
+// ---------- colour field ----------
+
+fn base64(b: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            s.push(if i <= c.len() { T[(n >> (18 - 6 * i)) as usize & 63] as char } else { '=' });
+        }
+    }
+    s
+}
+
+/// A smooth colour field: a grid of colours `c` px a cell from (`x0`, `y0`).
+/// As squares, each cell is a square of its colour and the whole is blurred
+/// by `sigma`; as a picture, one pixel a cell, enlarged with the browser's
+/// bilinear smoothing (colours blend between cell centres). Either way the
+/// colour at a point is a weighted sum of a few nearby cells.
+#[derive(Clone, Debug)]
+struct Field {
+    kind: crate::Field,
+    x0: f64,
+    y0: f64,
+    c: f64,
+    gw: usize,
+    gh: usize,
+    cols: Vec<C3>,
+    sigma: f64,
+    /// Weights at each pixel centre along x and y, from the grid's corner.
+    tx: Vec<([usize; 5], [f64; 5], usize)>,
+    ty: Vec<([usize; 5], [f64; 5], usize)>,
+}
+
+type Weights = ([usize; 5], [f64; 5], usize);
+
+impl Field {
+    fn tables(&mut self) {
+        let (nx, ny) = ((self.c * self.gw as f64) as usize, (self.c * self.gh as f64) as usize);
+        self.tx = (0..nx).map(|i| self.weights(self.x0 + i as f64 + 0.5, self.x0, self.gw)).collect();
+        self.ty = (0..ny).map(|i| self.weights(self.y0 + i as f64 + 0.5, self.y0, self.gh)).collect();
+    }
+
+    /// Looked up at pixel centres, worked out elsewhere.
+    fn axis(&self, v: f64, origin: f64, n: usize, t: &[Weights]) -> Weights {
+        let u = v - origin - 0.5;
+        if u >= 0.0 && u.fract() == 0.0 && (u as usize) < t.len() {
+            return t[u as usize];
+        }
+        self.weights(v, origin, n)
+    }
+
+    /// The cells along one axis that reach coordinate `v`, with their weights.
+    fn weights(&self, v: f64, origin: f64, n: usize) -> ([usize; 5], [f64; 5], usize) {
+        let (mut ks, mut ws, mut m) = ([0usize; 5], [0f64; 5], 0);
+        let t = (v - origin) / self.c;
+        match self.kind {
+            crate::Field::Picture => {
+                let t = t - 0.5;
+                let i0 = t.floor();
+                let f = t - i0;
+                for (i, w) in [(i0, 1.0 - f), (i0 + 1.0, f)] {
+                    ks[m] = (i.max(0.0) as usize).min(n - 1);
+                    ws[m] = w;
+                    m += 1;
+                }
+            }
+            _ => {
+                // A blurred square of one cell is the difference of two
+                // Gaussian edges.
+                let phi = |z: f64| 0.5 * erfc(-z / std::f64::consts::SQRT_2);
+                let s = self.sigma / self.c;
+                let i0 = t.floor() as i64;
+                for i in i0 - 2..=i0 + 2 {
+                    if i < 0 || i >= n as i64 {
+                        continue;
+                    }
+                    let w = phi((t - i as f64) / s) - phi((t - i as f64 - 1.0) / s);
+                    if w > 1e-4 {
+                        ks[m] = i as usize;
+                        ws[m] = w;
+                        m += 1;
+                    }
+                }
+            }
+        }
+        (ks, ws, m)
+    }
+
+    fn at(&self, x: f64, y: f64) -> C3 {
+        let (kx, wx, mx) = self.axis(x, self.x0, self.gw, &self.tx);
+        let (ky, wy, my) = self.axis(y, self.y0, self.gh, &self.ty);
+        let mut c = [0.0; 3];
+        for b in 0..my {
+            for a in 0..mx {
+                let w = wx[a] * wy[b];
+                let col = self.cols[ky[b] * self.gw + kx[a]];
+                for ch in 0..3 {
+                    c[ch] += w * col[ch];
+                }
+            }
+        }
+        c
+    }
+}
+
+/// Fit a colour field over `bb` to the samples: least squares, with a pull
+/// towards neighbouring cells so cells with few samples (or none, outside the
+/// area and in its holes) follow their neighbours smoothly.
+fn fit_field(s: &Samples, bb: &Bbox, long: f64, kind: crate::Field) -> Base {
+    let c = (long / 50.0).round().max(4.0);
+    let margin = if kind == crate::Field::Picture { 1.0 } else { 3.0 };
+    let (x0, y0) = (bb.x0 as f64 - margin * c, bb.y0 as f64 - margin * c);
+    let gw = (((bb.x1 + 1 - bb.x0) as f64 + 2.0 * margin * c) / c).ceil() as usize;
+    let gh = (((bb.y1 + 1 - bb.y0) as f64 + 2.0 * margin * c) / c).ceil() as usize;
+    let n = gw * gh;
+    let mut f = Field { kind, x0, y0, c, gw, gh, cols: vec![], sigma: 0.6 * c, tx: vec![], ty: vec![] };
+    f.tables();
+    // Normal equations, stored per cell for neighbours up to 4 cells away.
+    const R: i64 = 4;
+    const SPAN: usize = (2 * R + 1) as usize;
+    let off = |a: usize, b: usize| -> usize { ((b / gw) as i64 - (a / gw) as i64 + R) as usize * SPAN + ((b % gw) as i64 - (a % gw) as i64 + R) as usize };
+    let mut g = vec![0f64; n * SPAN * SPAN];
+    let mut rhs = vec![[0f64; 3]; n];
+    let mut seen = vec![0f64; n];
+    for (&(x, y), col) in s.xy.iter().zip(&s.c) {
+        let (kx, wx, mx) = f.axis(x, x0, gw, &f.tx);
+        let (ky, wy, my) = f.axis(y, y0, gh, &f.ty);
+        let mut ks = [(0usize, 0f64); 25];
+        let mut m = 0;
+        for b in 0..my {
+            for a in 0..mx {
+                ks[m] = (ky[b] * gw + kx[a], wx[a] * wy[b]);
+                m += 1;
+            }
+        }
+        for &(ka, wa) in &ks[..m] {
+            for ch in 0..3 {
+                rhs[ka][ch] += wa * col[ch];
+            }
+            seen[ka] += wa;
+            for &(kb, wb) in &ks[..m] {
+                g[ka * SPAN * SPAN + off(ka, kb)] += wa * wb;
+            }
+        }
+    }
+    // The pull: small next to a cell's own samples, so it only decides cells
+    // the samples leave open.
+    let per = s.xy.len() as f64 / seen.iter().filter(|&&v| v > 0.05).count().max(1) as f64;
+    let lam = 0.02 * per;
+    // The whole system as a sparse matrix: the samples' part plus the pull.
+    let mut rows: Vec<Vec<(usize, f64)>> = vec![vec![]; n];
+    for (k, row) in rows.iter_mut().enumerate() {
+        let (i, j) = ((k % gw) as i64, (k / gw) as i64);
+        let mut diag = 0.0;
+        for dj in -R..=R {
+            for di in -R..=R {
+                let (ii, jj) = (i + di, j + dj);
+                if ii < 0 || jj < 0 || ii >= gw as i64 || jj >= gh as i64 {
+                    continue;
+                }
+                let gv = g[k * SPAN * SPAN + ((dj + R) as usize * SPAN + (di + R) as usize)];
+                if di == 0 && dj == 0 {
+                    diag += gv;
+                } else if gv != 0.0 {
+                    row.push((jj as usize * gw + ii as usize, gv));
+                }
+            }
+        }
+        for (ok, kk) in [(i > 0, k.wrapping_sub(1)), (i + 1 < gw as i64, k + 1), (j > 0, k.wrapping_sub(gw)), (j + 1 < gh as i64, k + gw)] {
+            if ok {
+                diag += lam;
+                match row.iter_mut().find(|e| e.0 == kk) {
+                    Some(e) => e.1 -= lam,
+                    None => row.push((kk, -lam)),
+                }
+            }
+        }
+        row.push((k, diag));
+    }
+    let mul = |x: &[f64], y: &mut [f64]| {
+        for (k, row) in rows.iter().enumerate() {
+            y[k] = row.iter().map(|&(kk, v)| v * x[kk]).sum();
+        }
+    };
+    let mut cols = vec![[0f64; 3]; n];
+    for ch in 0..3 {
+        let mean = s.c.iter().map(|c| c[ch]).sum::<f64>() / s.c.len().max(1) as f64;
+        // Conjugate gradients from the mean colour.
+        let mut x = vec![mean; n];
+        let mut ax = vec![0f64; n];
+        mul(&x, &mut ax);
+        let mut r: Vec<f64> = (0..n).map(|k| rhs[k][ch] - ax[k]).collect();
+        let mut p = r.clone();
+        let mut rr: f64 = r.iter().map(|v| v * v).sum();
+        let r0 = rr;
+        let mut ap = vec![0f64; n];
+        for _ in 0..300 {
+            if rr <= r0 * 1e-8 {
+                break;
+            }
+            mul(&p, &mut ap);
+            let pap: f64 = p.iter().zip(&ap).map(|(a, b)| a * b).sum();
+            if pap <= 0.0 {
+                break;
+            }
+            let al = rr / pap;
+            for k in 0..n {
+                x[k] += al * p[k];
+                r[k] -= al * ap[k];
+            }
+            let rr2: f64 = r.iter().map(|v| v * v).sum();
+            let be = rr2 / rr;
+            rr = rr2;
+            for k in 0..n {
+                p[k] = r[k] + be * p[k];
+            }
+        }
+        for k in 0..n {
+            cols[k][ch] = x[k];
+        }
+    }
+    // As written: squares in 64 levels a channel (the blur hides the steps),
+    // a picture in 256.
+    let step = if kind == crate::Field::Picture { 1.0 } else { 4.0 };
+    f.cols = cols.into_iter().map(|c| c.map(|v| ((v / step).floor() * step + step / 2.0 - 0.5).clamp(0.0, 255.0).round())).collect();
+    let b0 = flat(s);
+    Base { grad: b0.grad, sheen: None, field: Some(f) }
 }
 
 // ---------- blur ----------
@@ -856,6 +1091,8 @@ fn box_pass(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize, horiz: b
 /// A soft glow inside an area: `mask` blurred by `sigma`, in colour `col` at opacity `a`.
 struct Glow {
     mask: Vec<u8>,
+    /// It grows from a see-through hole.
+    hole: bool,
     col: C3,
     a: f64,
     sigma: f64,
@@ -867,6 +1104,9 @@ struct Area {
     glows: Vec<Glow>,
     /// Regions inside the area that its glows run under.
     enclosed: Vec<u32>,
+    /// Some glow grows from a see-through hole, so the glows are clipped to
+    /// the area or they would fill the hole.
+    clip: bool,
 }
 
 /// A glow's colour change over the base, on its own grid of cells.
@@ -883,7 +1123,8 @@ struct Bbox {
 #[allow(clippy::too_many_arguments)]
 /// Err holds the regions to try again with, without those the fit does worse
 /// on than their bands (empty: give up).
-fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hidden: &[bool], bb: &Bbox, enclosed: Vec<u32>, regions: Vec<u32>) -> Result<Area, Vec<u32>> {
+#[allow(clippy::too_many_arguments)]
+fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hidden: &[bool], bb: &Bbox, enclosed: Vec<u32>, regions: Vec<u32>, field: crate::Field) -> Result<Area, Vec<u32>> {
     let (w, h, d) = (r.w, r.h, r.data);
     let long = w.max(h) as f64;
     let st = (js_round(long / 2048.0) as usize).max(1);
@@ -932,6 +1173,48 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
             }
         }
     }
+    // What each kind 2 pixel's shape is: its region, or one of the holes below.
+    let mut sid: Vec<u32> = (0..bw * bh).map(|c| if kind[c] == 2 { reg.lab[(bb.y0 + c / bw) * w + bb.x0 + c % bw] } else { NONE }).collect();
+    // Holes: see-through pixels the area surrounds, such as a bulb cut out of a
+    // ticket. A glow grows from them as from a shape inside the area.
+    let mut out = vec![false; bw * bh];
+    let mut stack: Vec<usize> = (0..bw * bh).filter(|&c| kind[c] == 0 && (c % bw == 0 || c % bw == bw - 1 || c / bw == 0 || c / bw == bh - 1)).collect();
+    stack.iter().for_each(|&c| out[c] = true);
+    while let Some(c) = stack.pop() {
+        let (x, y) = (c % bw, c / bw);
+        for (ok, k) in [(x > 0, c.wrapping_sub(1)), (x + 1 < bw, c + 1), (y > 0, c.wrapping_sub(bw)), (y + 1 < bh, c + bw)] {
+            if ok && kind[k] == 0 && !out[k] {
+                out[k] = true;
+                stack.push(k);
+            }
+        }
+    }
+    let mut holes = reg.col.len() as u32;
+    for c0 in 0..bw * bh {
+        let see_through = |c: usize| kind[c] == 0 && !out[c] && d[((bb.y0 + c / bw) * w + bb.x0 + c % bw) * 4 + 3] < 255;
+        if !see_through(c0) || sid[c0] != NONE {
+            continue;
+        }
+        sid[c0] = holes;
+        stack.push(c0);
+        while let Some(c) = stack.pop() {
+            let (x, y) = (c % bw, c / bw);
+            for (ok, k) in [(x > 0, c.wrapping_sub(1)), (x + 1 < bw, c + 1), (y > 0, c.wrapping_sub(bw)), (y + 1 < bh, c + bw)] {
+                if ok && sid[k] == NONE && see_through(k) {
+                    sid[k] = holes;
+                    stack.push(k);
+                }
+            }
+        }
+        holes += 1;
+    }
+    let hole = |c: usize| sid[c] != NONE && sid[c] >= reg.col.len() as u32;
+    dbg_line!("    holes: {}, {} px", holes - reg.col.len() as u32, (0..bw * bh).filter(|&c| sid[c] != NONE && sid[c] >= reg.col.len() as u32).count());
+    for c in 0..bw * bh {
+        if hole(c) {
+            kind[c] = 2;
+        }
+    }
     // `quick`: a rough pass, only to see where the glows are.
     let find_glows = |base: &Base, fit_loss: f64, quick: bool| -> (Vec<Glow>, Vec<GlowPred>) {
         let mut res = vec![[0f32; 3]; bw * bh];
@@ -956,7 +1239,7 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
                 if kind[c] != 2 {
                     continue;
                 }
-                let g = reg.lab[(bb.y0 + y) * w + bb.x0 + x];
+                let g = sid[c];
                 for (ok, k) in [(x > 0, c.wrapping_sub(1)), (x + 1 < bw, c + 1), (y > 0, c.wrapping_sub(bw)), (y + 1 < bh, c + bw)] {
                     if ok && (kind[k] == 1 || kind[k] == 3) {
                         let e = touch.entry(g).or_default();
@@ -969,8 +1252,7 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
             }
         }
         let joins = |c: usize| {
-            let g = reg.lab[(bb.y0 + c / bw) * w + bb.x0 + c % bw];
-            touch.get(&g).is_some_and(|&(b, t)| b * 2 >= t)
+            touch.get(&sid[c]).is_some_and(|&(b, t)| b * 2 >= t)
         };
         let cand: Vec<bool> = (0..bw * bh).map(|c| blob[c] || (kind[c] == 2 && joins(c))).collect();
         // 8-connected components of the candidates
@@ -1065,7 +1347,7 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
                     if comp[c] == id {
                         if kind[c] == 2 {
                             hid[cell] += 1;
-                            let rg = reg.lab[(bb.y0 + y) * w + bb.x0 + x];
+                            let rg = sid[c];
                             let si = seeds.iter().position(|&q| q == rg).unwrap_or_else(|| {
                                 seeds.push(rg);
                                 seeds.len() - 1
@@ -1221,11 +1503,12 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
             dbg_line!("    glow {id}: blob {nb} px, bbox {}x{}, {ns} shapes → {} at {a:.2}, σ {:.1} px, error {:.2}", cb.x1 - cb.x0 + 1, cb.y1 - cb.y0 + 1, hex(col), bs * ds as f64, be / none);
             // A glow explains its blob well and is a part of the area, not most
             // of it: a leftover that big means the gradient under it is wrong.
-            if be > 0.2 * none || nb * 3 > total {
+            if be > 0.35 * none || nb * 3 > total {
                 return None;
             }
             // Each glow's own shape at full size.
             let mut masks = vec![vec![0u8; 0]; ns];
+            let mut from_hole = vec![false; ns];
             for y in g.y0..=g.y1 {
                 for x in g.x0..=g.x1 {
                     let c = y * bw + x;
@@ -1239,7 +1522,7 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
                     if inside {
                         let cell = ((y - g.y0) / ds) * gw + (x - g.x0) / ds;
                         let si = if kind[c] == 2 && seeds.len() > 1 {
-                            let rg = reg.lab[(bb.y0 + y) * w + bb.x0 + x];
+                            let rg = sid[c];
                             seeds.iter().position(|&q| q == rg).unwrap_or(0)
                         } else {
                             seed_at(cell)
@@ -1248,11 +1531,12 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
                             masks[si] = vec![0u8; w * h];
                         }
                         masks[si][(bb.y0 + y) * w + bb.x0 + x] = 1;
+                        from_hole[si] |= hole(c);
                     }
                 }
             }
             let pred = (g, (0..gw * gh).map(|k| sub(col, bcell[k]).map(|v| (v * cover[k] as f64) as f32)).collect());
-            Some((pred, masks.into_iter().filter(|m| !m.is_empty()).map(|mask| Glow { mask, col, a, sigma: bs * ds as f64 }).collect::<Vec<_>>()))
+            Some((pred, masks.into_iter().zip(from_hole).filter(|(m, _)| !m.is_empty()).map(|(mask, hole)| Glow { mask, hole, col, a, sigma: bs * ds as f64 }).collect::<Vec<_>>()))
         };
         #[cfg(feature = "parallel")]
         let found: Vec<_> = {
@@ -1298,8 +1582,9 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
     lap("base again");
     let (glows, preds) = find_glows(&base, fit_loss, false);
     lap("glows again");
-    // Keep the gradient only where it is closer to the original than the bands:
-    // over the whole area, and region by region.
+    // How far a model is from the original, and how far the bands are: over
+    // the whole area, and region by region.
+    let check = |base: &Base, preds: &[GlowPred]| {
     let (mut em, mut eb, mut n) = (0.0, 0.0, 0f64);
     let mut per: HashMap<u32, (f64, f64)> = HashMap::new();
     for y in (0..bh).step_by(stride) {
@@ -1311,7 +1596,7 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
             let j = (bb.y0 + y) * w + bb.x0 + x;
             let o = rgb(d, j);
             let mut pm = base.at((bb.x0 + x) as f64 + 0.5, (bb.y0 + y) as f64 + 0.5);
-            for (g, pr) in &preds {
+            for (g, pr) in preds {
                 if x >= g.x0 && x <= g.x1 && y >= g.y0 && y <= g.y1 {
                     let gw = (g.x1 - g.x0 + 1).div_ceil(ds);
                     let v = pr[((y - g.y0) / ds) * gw + (x - g.x0) / ds];
@@ -1329,13 +1614,48 @@ fn fit_area(r: &Image, p: &Pal, idx: &[i16], reg: &Regions, member: &[bool], hid
             t.1 += e2;
         }
     }
+    (em, eb, n, per)
+    };
+    let (mut em, mut eb, mut n, mut per) = check(&base, &preds);
     dbg_line!("    check: gradient {:.2} against bands {:.2} per pixel", em / n.max(1.0), eb / n.max(1.0));
+    let (mut base, mut glows) = (base, glows);
+    // A colour field follows lighting no gradient can; it takes over when it
+    // is clearly closer.
+    if field != crate::Field::Off {
+        let fb = fit_field(&s, bb, long, field);
+        let fl = loss(&s, &|x, y| fb.at(x, y));
+        lap("field");
+        let (fg, fp) = find_glows(&fb, fl, false);
+        let (fm, fe, fnn, fper) = check(&fb, &fp);
+        dbg_line!("    check: field {:.2} against bands {:.2} per pixel, {} glows", fm / fnn.max(1.0), fe / fnn.max(1.0), fg.len());
+        if fm < 0.8 * em {
+            (em, eb, n, per, base, glows) = (fm, fe, fnn, fper, fb, fg);
+        }
+    }
     // Regions noticeably worse than their bands (by 2 per pixel) go back to them.
     let worse: Vec<u32> = regions.iter().copied().filter(|g| per.get(g).is_some_and(|&(e1, e2)| e1 > e2 + 2.0 * reg.n[*g as usize] as f64 / (stride * stride) as f64)).collect();
+    for &g in &worse {
+        let (e1, e2) = per[&g];
+        let m = reg.n[g as usize] as f64 / (stride * stride) as f64;
+        dbg_line!("      worse region {g}: {} px, colour {}, gradient {:.1} bands {:.1} per pixel", reg.n[g as usize], to_hex(p.pal[reg.col[g as usize] as usize]), e1 / m, e2 / m);
+    }
+    // A colour field is local, so the regions it fits worse can go back to
+    // their bands without fitting it again.
+    let (regions, worse) = if base.field.is_some() && em < eb && !worse.is_empty() {
+        let lost: usize = worse.iter().map(|&g| reg.n[g as usize]).sum();
+        if lost * 4 < total {
+            (regions.into_iter().filter(|g| !worse.contains(g)).collect(), vec![])
+        } else {
+            (regions, worse)
+        }
+    } else {
+        (regions, worse)
+    };
     if n == 0.0 || em >= eb || !worse.is_empty() {
         return Err(regions.into_iter().filter(|g| !worse.contains(g)).collect());
     }
-    Ok(Area { regions, base, glows, enclosed })
+    let clip = glows.iter().any(|g| g.hole);
+    Ok(Area { regions, base, glows, enclosed, clip })
 }
 
 // ---------- halo ----------
@@ -1841,7 +2161,7 @@ pub fn trace(r: &Image, o: &Opts, p: &Pal, idx: &[i16]) -> Traced {
             for &x in &enclosed {
                 hidden[x as usize] = true;
             }
-            match fit_area(r, p, idx, &reg, &member, &hidden, &bb, enclosed, g.clone()) {
+            match fit_area(r, p, idx, &reg, &member, &hidden, &bb, enclosed, g.clone(), o.field) {
                 Ok(a) => return Some(a),
                 Err(keep) if keep.is_empty() || keep.len() == g.len() => return None,
                 Err(keep) => {
@@ -2038,7 +2358,96 @@ pub fn trace(r: &Image, o: &Opts, p: &Pal, idx: &[i16]) -> Traced {
                 format!("url(#g{ai})")
             }
         };
+        // Clipped to the area's outline: a colour field, which runs past it,
+        // and glows that grow from holes in it.
+        let clipped = a.clip || a.base.field.is_some();
+        if clipped {
+            defs.push_str(&format!("<clipPath id=\"k{ai}\"><use href=\"#a{ai}\"/></clipPath>"));
+        }
         match &a.base.sheen {
+            _ if a.base.field.is_some() => {
+                let f = a.base.field.as_ref().unwrap();
+                defs.push_str(&format!("<path id=\"a{ai}\" d=\"{d}\"/>"));
+                // The cells within reach of the area; the rest never show.
+                let mut used = vec![false; f.gw * f.gh];
+                let reach = if f.kind == crate::Field::Picture { 1 } else { 3 };
+                let mut member = vec![false; reg.col.len()];
+                for &g in &a.regions {
+                    member[g as usize] = true;
+                }
+                for (j, &g) in reg.lab.iter().enumerate() {
+                    if g != NONE && member[g as usize] {
+                        let (i, k) = (((j % w) as f64 - f.x0) / f.c, ((j / w) as f64 - f.y0) / f.c);
+                        let (i, k) = (i.max(0.0) as usize, k.max(0.0) as usize);
+                        for kk in k.saturating_sub(reach)..=(k + reach).min(f.gh - 1) {
+                            for ii in i.saturating_sub(reach)..=(i + reach).min(f.gw - 1) {
+                                used[kk * f.gw + ii] = true;
+                            }
+                        }
+                    }
+                }
+                let cols: Vec<[u8; 3]> = f.cols.iter().map(|c| c.map(|v| v as u8)).collect();
+                match f.kind {
+                    crate::Field::Picture => {
+                        let px: Vec<u8> = cols.iter().flatten().copied().collect();
+                        body.push_str(&format!(
+                            "<image clip-path=\"url(#k{ai})\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{}\"/>",
+                            num(f.x0, 0),
+                            num(f.y0, 0),
+                            num(f.c * f.gw as f64, 0),
+                            num(f.c * f.gh as f64, 0),
+                            base64(&crate::png::rgb(f.gw, f.gh, &px))
+                        ));
+                    }
+                    _ => {
+                        // Runs of one colour along each row, one path a colour.
+                        let mut order: Vec<[u8; 3]> = vec![];
+                        let mut runs: HashMap<[u8; 3], Vec<(usize, usize, usize)>> = HashMap::new();
+                        for k in 0..f.gh {
+                            let mut i = 0;
+                            while i < f.gw {
+                                if !used[k * f.gw + i] {
+                                    i += 1;
+                                    continue;
+                                }
+                                let col = cols[k * f.gw + i];
+                                let i0 = i;
+                                while i < f.gw && used[k * f.gw + i] && cols[k * f.gw + i] == col {
+                                    i += 1;
+                                }
+                                runs.entry(col).or_insert_with(|| {
+                                    order.push(col);
+                                    vec![]
+                                }).push((i0, k, i - i0));
+                            }
+                        }
+                        let (cw, ch) = (f.c * f.gw as f64, f.c * f.gh as f64);
+                        let fi = filter(&mut defs, f.sigma, (cw as usize, ch as usize));
+                        body.push_str(&format!("<g clip-path=\"url(#k{ai})\"><g filter=\"url(#f{fi})\">"));
+                        let c = num(f.c, 0);
+                        for col in order {
+                            let mut dd = String::new();
+                            let mut at: Option<(f64, f64)> = None;
+                            for &(i, k, n) in &runs[&col] {
+                                let (x, y) = (f.x0 + i as f64 * f.c, f.y0 + k as f64 * f.c);
+                                let wd = num(n as f64 * f.c, 0);
+                                match at {
+                                    None => dd.push_str(&format!("M{} {}", num(x, 0), num(y, 0))),
+                                    Some((px, py)) => dd.push_str(&format!("m{} {}", num(x - px, 0), num(y - py, 0))),
+                                }
+                                dd.push_str(&format!("h{wd}v{c}h-{wd}z"));
+                                at = Some((x, y));
+                            }
+                            body.push_str(&format!("<path fill=\"{}\" d=\"{}\"/>", hex(col.map(|v| v as f64)), dd.replace(" -", "-")));
+                        }
+                        body.push_str("</g></g>");
+                    }
+                }
+            }
+            None if clipped => {
+                defs.push_str(&format!("<path id=\"a{ai}\" d=\"{d}\"/>"));
+                body.push_str(&format!("<use href=\"#a{ai}\" fill=\"{fill}\"/>"));
+            }
             None => body.push_str(&format!("<path fill=\"{fill}\" d=\"{d}\"/>")),
             Some(sh) => {
                 defs.push_str(&format!(
@@ -2055,6 +2464,9 @@ pub fn trace(r: &Image, o: &Opts, p: &Pal, idx: &[i16]) -> Traced {
         // Each glow is a path of its own, so where two overlap they add up as
         // separate glows do. Runs of one colour share their fill.
         let mut run: Vec<(String, String)> = vec![];
+        if clipped {
+            body.push_str(&format!("<g clip-path=\"url(#k{ai})\">"));
+        }
         let flush = |body: &mut String, run: &mut Vec<(String, String)>, paths: &mut usize| {
             if run.is_empty() {
                 return;
@@ -2085,6 +2497,9 @@ pub fn trace(r: &Image, o: &Opts, p: &Pal, idx: &[i16]) -> Traced {
             run.push((fill, format!("{op} filter=\"url(#f{f})\" d=\"{gd}\"/>")));
         }
         flush(&mut body, &mut run, &mut paths);
+        if clipped {
+            body.push_str("</g>");
+        }
     }
     let svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" fill-rule=\"evenodd\">{}{body}</svg>\n",
