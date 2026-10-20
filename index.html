@@ -66,6 +66,7 @@
   .png select:disabled{opacity:.45}
   .auto{display:grid;gap:8px;padding-top:14px;border-top:1px solid var(--line)}
   .auto-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:.86rem}
+  .ai input[type=password],.ai select{width:100%;box-sizing:border-box;font:500 .85rem var(--mono);padding:7px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
   .auto-row input{width:4.2em;font:500 .85rem var(--mono);padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
 
   .results{display:grid;gap:14px;min-width:0}
@@ -294,6 +295,35 @@
           <input id="target" type="number" min="0.01" max="5" step="0.05" value="0.2"><span>%</span>
         </div>
         <p class="hint">Tries each detail and smoothing setting, straight lines, stronger colour merging and, for an SVG, Tidy. Keeps the smallest file that stays this close to the original.</p>
+      </div>
+
+      <div class="auto ai" id="aiBox">
+        <div class="field-head"><span class="label">AI redraw</span><span class="term">OpenRouter</span></div>
+        <p class="hint">Asks an AI model to rebuild the artwork the way a designer would, from simple shapes, gradients and glows, then shows it its drawing next to the original and asks it to fix what's wrong. Often far smaller and cleaner than a trace, but less exact. Sends the image to OpenRouter and the model's maker, and costs a few cents a round on your own OpenRouter account.</p>
+        <div class="field">
+          <label for="aiKey">OpenRouter key</label>
+          <input id="aiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…">
+          <p class="hint">From openrouter.ai/keys. Kept on this device only and sent nowhere but OpenRouter. <button type="button" class="linkish" id="aiForget" hidden>Forget it</button></p>
+        </div>
+        <div class="field">
+          <label for="aiModel">Model</label>
+          <select id="aiModel">
+            <option value="google/gemini-4-argon">Gemini 4 Argon · ~10¢</option>
+            <option value="openai/gpt-6.1-sol">GPT-6.1 Sol · ~6¢</option>
+            <option value="anthropic/claude-sonnet-5.5">Claude Sonnet 5.5 · ~3¢</option>
+            <option value="anthropic/claude-haiku-5.5">Claude Haiku 5.5 · &lt;1¢</option>
+          </select>
+          <p class="hint">Rough cost of one round. Gemini 4 Argon and GPT-6.1 Sol came out closest in testing; Haiku is far cheaper and can do for a simple logo.</p>
+        </div>
+        <div class="field">
+          <label class="check small"><input id="aiStart" type="checkbox"> Start from a rough trace</label>
+          <p class="hint">Sends the model a quick trace too, so it can read off exact positions and colours. Much closer on flat logos and lettering; worse on soft lighting and glows, and dearer when the trace is big.</p>
+        </div>
+        <div class="auto-row">
+          <button class="btn primary" type="button" id="aiBtn">Redraw with AI</button>
+          <button class="btn" type="button" id="aiMore" hidden>One more round</button>
+        </div>
+        <p class="hint" id="aiNote" hidden></p>
       </div>
     </aside>
 
@@ -702,11 +732,16 @@
     $('sizes').innerHTML = `${fmtBytes(state.origBytes)}<span class="arrow">→</span>${fmtBytes(r.bytes)}`;
     const pct = Math.round(100 * (1 - r.bytes / state.origBytes));
     $('saving').textContent = pct >= 0 ? `${pct}% smaller` : `${-pct}% bigger`;
-    const pill = $('pill'), dp = r.diffPct;
-    const [cls, txt] = dp < 0.2 ? ['good', 'Looks the same'] : dp < 1 ? ['warn', 'Check fine details'] : ['bad', 'Visibly different'];
-    pill.className = `pill ${cls}`; pill.textContent = `${txt} · ${dp.toFixed(2)}% of pixels differ`; pill.hidden = false;
+    const pill = $('pill'), dp = r.diffPct, de = r.deMean;
+    // An AI drawing is all gradients, which cross palette colours everywhere,
+    // so it's judged by how far its colours are from the original instead.
+    const [cls, txt] = r.ai ? (de < 2 ? ['good', 'Looks the same'] : de < 5 ? ['warn', 'Close'] : ['bad', 'Visibly different'])
+      : dp < 0.2 ? ['good', 'Looks the same'] : dp < 1 ? ['warn', 'Check fine details'] : ['bad', 'Visibly different'];
+    pill.className = `pill ${cls}`; pill.textContent = r.ai ? `${txt} · colour ΔE ${de.toFixed(2)}` : `${txt} · ${dp.toFixed(2)}% of pixels differ`; pill.hidden = false;
     $('footB').innerHTML = `<span><b>${fmtBytes(r.bytes)}</b></span><span>≈ <b>${r.points.toLocaleString()}</b> points</span>` +
-      (r.tidy
+      (r.ai
+        ? `<span>AI redraw · <b>${r.ai.name}</b> · round <b>${r.ai.round}</b> · $${r.ai.cost.toFixed(3)} so far</span>`
+        : r.tidy
         ? `<span><b>${r.tidy.pathsIn.toLocaleString()}</b> → <b>${r.tidy.pathsOut.toLocaleString()}</b> paths</span><span><b>${r.tidy.coloursIn}</b> → <b>${r.tidy.coloursOut}</b> colours</span>${r.tidy.background ? `<span>background left out</span>` : ''}<span>tidy · merge <b>${r.opts.merge}</b></span>`
         : (r.opts.mode === 'colour' ? `<span><b>${r.layers}</b> layer${r.layers === 1 ? '' : 's'}</span>` : '') +
           `<span>grid <b>${r.opts.grid}</b> · ${r.opts.alpha === 0 ? 'straight lines' : `smoothing <b>${r.opts.tol}</b>`}${r.opts.gradients && r.opts.mode === 'colour' ? ` · gradients${r.opts.field !== 'off' ? ` + ${r.opts.field}` : ''}` : ''}</span>`) +
@@ -719,9 +754,11 @@
   function renderView() {
     const r = state.result; if (!r) return;
     const img = $('imgB');
-    if (state.view === 'diff') { showBlob('imgB', new Blob([r.diffPng], { type: 'image/png' })); img.classList.add('pix'); img.alt = 'Pixels that changed, in red, over a faint copy of the original'; }
+    if (state.view === 'diff') { showBlob('imgB', new Blob([r.diffPng], { type: 'image/png' })); img.classList.add('pix'); img.alt = r.ai ? 'How far each pixel\'s colour is from the original, black for right and bright for wrong' : 'Pixels that changed, in red, over a faint copy of the original'; }
     else { showBlob('imgB', new Blob([r.svg], { type: 'image/svg+xml' })); img.classList.remove('pix'); img.alt = 'The slimmed artwork'; }
     $('legend').hidden = state.view !== 'diff';
+    $('legend').lastChild.textContent = r.ai ? ' how far each pixel\'s colour is from the original: black is right, bright is wrong' : ' pixels that changed by more than a hairline';
+    $('legend').firstElementChild.hidden = !!r.ai;
   }
 
   // Nothing to copy or save until there is something to copy or save.
@@ -861,6 +898,7 @@
     }
     syncControls();
     $('fileName').textContent = name;
+    aiReset();
     try {
       if (src.kind === 'svg') sizedSvg(src.text, 16);
       showOriginal();
@@ -1093,6 +1131,245 @@
       else status(e.message || String(e));
     }
   });
+
+  // ---------- AI redraw ----------
+  // A model on OpenRouter, with the viewer's own key, redraws the artwork as an
+  // SVG; we score it like any trace and send back the original, its drawing and
+  // the difference so it can do better. Each round stands alone (the best SVG
+  // so far, not the whole conversation), so one more round costs the same as
+  // the last. samples/harness/redraw/redraw.py is the same loop for testing.
+  const AI_UP = 1024; // long side of the picture the model sees and draws in
+  const AI_RULES = `- Use viewBox="0 0 {w} {h}" and match positions, sizes and angles exactly: measure them from the image.
+- Use simple geometry: rect with rx, circle, ellipse, polygon, and paths of straight lines and arcs. Use a transform to rotate a group rather than working out rotated coordinates by hand.
+- Use linearGradient and radialGradient for smooth colour, and feGaussianBlur for soft glows and shadows, wherever the image has them. Give filters a region large enough that a blur isn't cut off.
+- Transparent parts of the image stay transparent: no background rectangle.
+- Draw lettering as path outlines, never as <text>: fonts differ between computers.
+- Use as few shapes as reproduce the image faithfully. Leave out artefacts such as a dark fringe round the edge or JPEG noise.
+{hints}`;
+  const AI_FIRST = `Redraw this {w}x{h} px image as a clean, compact SVG, the way a designer would rebuild it in a vector editor rather than trace its pixels.
+
+${AI_RULES}
+Reply with a few lines of notes on what you measured, then the complete SVG in one \`\`\`svg block.`;
+  const AI_AGAIN = `The first image is a {w}x{h} px original. Below is an SVG redrawing it, and the second image is a sheet: the original on the left, that SVG rendered in the middle, and a map of the colour difference on the right (black is right; bright is wrong). Mean colour difference ΔE {de} (under 2 is very close); {bad}% of the pixels are clearly wrong (ΔE over 10).{extra}
+
+Improve the SVG. Fix the biggest differences first: positions, sizes, angles and shapes, then colours. Keep it clean and compact: simple geometry, gradients for smooth colour, blurs for glows, lettering as paths, no background rectangle where the original is transparent. Reply with brief notes, then the complete revised SVG in one \`\`\`svg block.
+
+\`\`\`svg
+{svg}
+\`\`\``;
+  const AI_START = `The image is a {w}x{h} px original. Below is a rough automatic trace of it: its outlines are in the right places but bumpy and over-detailed, and smooth colour is cut into flat bands. Use it to read off exact positions and colours, then redraw the image as a clean, compact SVG the way a designer would build it in a vector editor.
+
+${AI_RULES}
+Reply with a few lines of notes on what you measured, then the complete SVG in one \`\`\`svg block.
+
+\`\`\`svg
+{svg}
+\`\`\``;
+  const fill = (t, v) => t.replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
+
+  const ai = { best: null, round: 0, cost: 0, model: '', busy: null };
+  let aiKey = '';
+  try { aiKey = localStorage.getItem('svgslim-openrouter') || ''; } catch { /* storage blocked */ }
+  $('aiKey').value = aiKey; $('aiForget').hidden = !aiKey;
+  try { const m = localStorage.getItem('svgslim-ai-model'); if (m && [...$('aiModel').options].some((o) => o.value === m)) $('aiModel').value = m; } catch { /* storage blocked */ }
+  $('aiKey').addEventListener('change', (e) => {
+    aiKey = e.target.value.trim(); $('aiForget').hidden = !aiKey;
+    try { if (aiKey) localStorage.setItem('svgslim-openrouter', aiKey); else localStorage.removeItem('svgslim-openrouter'); } catch { /* storage blocked */ }
+  });
+  $('aiForget').addEventListener('click', () => {
+    aiKey = ''; $('aiKey').value = ''; $('aiForget').hidden = true;
+    try { localStorage.removeItem('svgslim-openrouter'); } catch { /* storage blocked */ }
+  });
+  try { $('aiStart').checked = localStorage.getItem('svgslim-ai-start') === 'on'; } catch { /* storage blocked */ }
+  $('aiStart').addEventListener('change', (e) => { try { localStorage.setItem('svgslim-ai-start', e.target.checked ? 'on' : 'off'); } catch { /* storage blocked */ } });
+  $('aiModel').addEventListener('change', (e) => { try { localStorage.setItem('svgslim-ai-model', e.target.value); } catch { /* storage blocked */ } });
+
+  function aiReset() {
+    if (ai.busy) ai.busy.abort();
+    Object.assign(ai, { best: null, round: 0, cost: 0, model: '', busy: null });
+    syncAi();
+  }
+  function syncAi() {
+    $('aiBtn').textContent = ai.busy ? 'Stop' : 'Redraw with AI';
+    $('aiBtn').disabled = !state.source && !ai.busy;
+    $('aiMore').hidden = !ai.best || !!ai.busy;
+    $('aiModel').disabled = $('aiMore').disabled = !!ai.busy;
+  }
+
+  // The SVG from a reply, made safe to show and save: no scripts, no event
+  // handlers, nothing fetched from elsewhere.
+  function cleanSvg(text, w, h) {
+    const m = text.match(/```(?:svg|xml)?\s*(<svg[\s\S]*?<\/svg>)\s*```/) || text.match(/(<svg[\s\S]*<\/svg>)/);
+    if (!m) return null;
+    const doc = new DOMParser().parseFromString(m[1], 'image/svg+xml');
+    const svg = doc.documentElement;
+    if (doc.querySelector('parsererror') || !svg || svg.nodeName.toLowerCase() !== 'svg') return null;
+    doc.querySelectorAll('script,foreignObject,iframe,object,embed,audio,video,a').forEach((el) => {
+      if (el.nodeName === 'a') el.replaceWith(...el.childNodes); else el.remove();
+    });
+    for (const el of doc.querySelectorAll('*')) {
+      for (const a of [...el.attributes]) {
+        if (/^on/i.test(a.name)) el.removeAttribute(a.name);
+        else if (/href$/i.test(a.name) && !/^\s*(#|data:image\/(png|jpeg|gif|webp);)/i.test(a.value)) el.removeAttribute(a.name);
+        else if (/url\(\s*['"]?(?!#)/i.test(a.value)) el.setAttribute(a.name, a.value.replace(/url\(\s*['"]?(?!#)[^)]*\)/gi, 'none'));
+      }
+    }
+    doc.querySelectorAll('style').forEach((s) => { s.textContent = s.textContent.replace(/@import[^;]*;?/gi, '').replace(/url\(\s*['"]?(?!#)[^)]*\)/gi, 'none'); });
+    if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.removeAttribute('width'); svg.removeAttribute('height');
+    return new XMLSerializer().serializeToString(doc) + '\n';
+  }
+
+  const canvasOf = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  const pngUrl = (c) => c.toDataURL('image/png');
+  function imageCanvas(r) {
+    const c = canvasOf(r.w, r.h);
+    c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(r.data), r.w, r.h), 0, 0);
+    return c;
+  }
+
+  // ΔE per pixel between two same-size rasters, over white and over black,
+  // whichever is worse, as a heat map (black is right, bright is wrong), with
+  // the mean and the share over 10 where either is drawn.
+  function heatMap(a, b) {
+    const n = a.w * a.h, lin = new Float32Array(256);
+    for (let i = 0; i < 256; i++) { const v = i / 255; lin[i] = v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }
+    const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    const lab = (d, i, g) => {
+      const al = d[i + 3] / 255, c = [0, 1, 2].map((k) => lin[d[i + k]] * al + g * (1 - al));
+      const x = f((0.4124 * c[0] + 0.3576 * c[1] + 0.1805 * c[2]) / 0.9505), y = f(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]), z = f((0.0193 * c[0] + 0.1192 * c[1] + 0.9505 * c[2]) / 1.089);
+      return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+    };
+    const out = new ImageData(a.w, a.h);
+    let sum = 0, bad = 0, m = 0;
+    for (let p = 0; p < n; p++) {
+      const i = 4 * p;
+      let de = 0;
+      for (const g of [0, 1]) {
+        const u = lab(a.data, i, g), v = lab(b.data, i, g);
+        de = Math.max(de, Math.hypot(u[0] - v[0], u[1] - v[1], u[2] - v[2]));
+      }
+      if (a.data[i + 3] || b.data[i + 3]) { m++; sum += de; if (de > 10) bad++; }
+      const h = Math.min(1, de / 30) * 255;
+      out.data[i] = h; out.data[i + 1] = h / 2; out.data[i + 2] = h / 4; out.data[i + 3] = 255;
+    }
+    return { img: out, de: m ? sum / m : 0, bad: m ? 100 * bad / m : 0 };
+  }
+
+  // A quick small trace (1024 grid, heavy smoothing, at most 8 colours) in the
+  // model's own w x h coordinates, by a scale() group rather than rewriting
+  // every number, which would double its size.
+  async function roughTrace(w, h) {
+    const o = { ...opts(), mode: 'colour', method: 'redraw', grid: 1024, tol: 1.0, protect: 0, dec: 0, maxCol: Math.min(8, state.maxCol), gradients: false };
+    const R = await cachedRaster(state.source, 1024, false);
+    const { svg } = await core.trace(R, o, await paletteFor(o));
+    return svg.replace(/viewBox="[^"]*"([^>]*)>/, `viewBox="0 0 ${w} ${h}"$1><g transform="scale(${+(w / R.w).toPrecision(5)})">`).replace('</svg>', '</g></svg>').trim();
+  }
+
+  // The palette's main colours, so the model can use them exactly.
+  function aiHints(p, r) {
+    const lines = p.order.filter((i) => i !== p.bg && p.share[i] >= 0.01).sort((a, b) => p.share[b] - p.share[a])
+      .map((i) => `  ${toHex(p.pal[i])} ${Math.round(100 * p.share[i])}%`);
+    let clear = 0;
+    for (let i = 3; i < r.data.length; i += 4) if (r.data[i] < 128) clear++;
+    const t = Math.round(100 * clear / (r.w * r.h));
+    return (lines.length ? `- Measured colours (main colours of the image and their share of it; use them exactly, interpolating between them for gradients):\n${lines.join('\n')}\n` : '') +
+      (t >= 1 ? `- ${t}% of the image is transparent.\n` : '- The image is fully opaque.\n');
+  }
+
+  async function aiAsk(model, content, signal) {
+    let res;
+    try {
+      res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST', signal,
+        headers: { Authorization: `Bearer ${aiKey}`, 'Content-Type': 'application/json', 'X-Title': 'SVG Slimmer' },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content }], max_tokens: 24000, usage: { include: true } }),
+      });
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      throw new Error("Couldn't reach OpenRouter. Check the connection and try again.");
+    }
+    let body = null;
+    try { body = await res.json(); } catch { /* reported below */ }
+    if (!res.ok || !body || body.error) {
+      const why = (body && body.error && body.error.message) || `HTTP ${res.status}`;
+      if (res.status === 401) throw new Error('OpenRouter didn\'t accept that key. Check it at openrouter.ai/keys.');
+      if (res.status === 402) throw new Error('The OpenRouter account is out of credit.');
+      throw new Error(`OpenRouter: ${why}`);
+    }
+    return { text: (body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content) || '', cost: (body.usage && body.usage.cost) || 0 };
+  }
+
+  async function aiRound(fresh) {
+    if (ai.busy) { ai.busy.abort(); return; }
+    if (!state.source) return;
+    if (!aiKey) { status('Paste your OpenRouter key under AI redraw first.'); $('aiKey').focus(); return; }
+    const model = $('aiModel').value, name = $('aiModel').selectedOptions[0].textContent.split(' · ')[0];
+    // Redraw starts afresh; one more round improves on the best so far, with
+    // whichever model is chosen now.
+    if (fresh || !ai.best) Object.assign(ai, { best: null, round: 0, cost: 0 });
+    ai.model = model;
+    const ctl = ai.busy = new AbortController(); syncAi();
+    const id = ++state.run;
+    try {
+      const o = { ...opts(), mode: 'colour', method: 'redraw' }, p = await paletteFor(o);
+      const nat = state.src || AI_UP;
+      const up = await cachedRaster(state.source, Math.min(AI_UP, nat), false);
+      const { w, h } = up;
+      const orig = { type: 'image_url', image_url: { url: pngUrl(imageCanvas(up)) } };
+      let content;
+      if (!ai.best) {
+        const hints = aiHints(p, up);
+        const text = $('aiStart').checked ? fill(AI_START, { w, h, hints, svg: await roughTrace(w, h) }) : fill(AI_FIRST, { w, h, hints });
+        content = [{ type: 'text', text }, orig];
+      } else {
+        const b = ai.best;
+        const extra = /<text[\s>]/.test(b.svg) ? ' It uses <text>, which renders in whatever font each computer has: draw the lettering as paths.' : '';
+        content = [{ type: 'text', text: fill(AI_AGAIN, { w, h, de: b.heat.de.toFixed(2), bad: b.heat.bad.toFixed(1), extra, svg: b.svg.trim() }) }, orig, { type: 'image_url', image_url: { url: b.sheet } }];
+      }
+      const n = ai.round + 1;
+      status(`${name}, round ${n}: drawing… (often a minute or two)`);
+      const t0 = Date.now();
+      const { text, cost } = await aiAsk(model, content, ctl.signal);
+      ai.cost += cost; ai.round = n;
+      const svg = cleanSvg(text, w, h);
+      if (!svg) throw new Error(`${name} didn't send back a readable SVG in round ${n}. Try another round or another model.`);
+      status(`${name}, round ${n}: checking…`);
+      const cmp = await compare(svg, o, p);
+      const res = { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers: 0, ...cmp, opts: o, ai: { name, round: n, cost: ai.cost } };
+      const better = !ai.best || res.deMean < ai.best.deMean;
+      if (better) {
+        // Original | drawing | difference, for the next round to look at.
+        const draw = await raster({ kind: 'svg', text: svg }, Math.max(w, h), false);
+        const heat = heatMap(up, draw);
+        const s = Math.min(1, 1500 / (3 * w)), sw = Math.round(w * s), sh = Math.round(h * s);
+        const c = canvasOf(3 * sw, sh), ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 2 * sw, sh);
+        ctx.drawImage(imageCanvas(up), 0, 0, sw, sh); ctx.drawImage(imageCanvas(draw), sw, 0, sw, sh);
+        const hc = canvasOf(w, h); hc.getContext('2d').putImageData(heat.img, 0, 0); ctx.drawImage(hc, 2 * sw, 0, sw, sh);
+        // The Difference view shows the heat map too: the palette's red marks
+        // would light up every gradient.
+        res.diffPng = new Uint8Array(await (await new Promise((r) => hc.toBlob(r, 'image/png'))).arrayBuffer());
+        ai.best = { ...res, heat, sheet: pngUrl(c) };
+      }
+      if (id === state.run) {
+        state.result = better ? res : { ...ai.best, ai: { ...ai.best.ai, cost: ai.cost } };
+        showResult();
+        const secs = Math.round((Date.now() - t0) / 1000);
+        status(better
+          ? `${name}, round ${n}: ΔE ${res.deMean.toFixed(2)} in ${secs} s, $${cost.toFixed(3)}. One more round asks it to fix what's still different.`
+          : `${name}, round ${n} came out worse (ΔE ${res.deMean.toFixed(2)}), so the best so far, round ${ai.best.ai.round}, stays. $${cost.toFixed(3)} this round.`);
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') status('AI redraw stopped.');
+      else status(e.message || String(e));
+    } finally {
+      ai.busy = null; syncAi();
+    }
+  }
+  $('aiBtn').addEventListener('click', () => aiRound(true));
+  $('aiMore').addEventListener('click', () => aiRound(false));
+  syncAi();
 
   // ---------- start with the sample ----------
   syncControls();
