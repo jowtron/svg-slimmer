@@ -11,7 +11,7 @@
 //! - `index`       {o, p}             [original at o.grid]   → [index map]
 //! - `layers`      {o, p, ks}         [index map]            → {paths}
 //! - `sourceIndex` {o, p}             [original at CMP]      → [index map]
-//! - `compare`     {o, p, bw, bh}     [original's index map, original, result] → {diffPct} [diff PNG]
+//! - `compare`     {o, p, bw, bh}     [original's index map, original, result] → {diffPct, deMean, deOver} [diff PNG]
 //! - `quantize`    {o, p}             [original at any size] → {colours, transparent} [PNG]
 //! - `tidy`        {o, text}          []                     → {svg, pathsIn, pathsOut, coloursIn, coloursOut, background, palette}
 //!                                                             or {unsupported: reason}
@@ -129,7 +129,7 @@ fn run(msg: &[u8]) -> Result<Vec<u8>, String> {
                 return Err(bad());
             }
             let c = compare::compare(&a_idx, &img(1, head.w, head.h)?, &img(2, head.bw, head.bh)?, o, pal()?);
-            encode(&json!({ "diffPct": c.diff_pct }), &[&c.diff_png])
+            encode(&json!({ "diffPct": c.diff_pct, "deMean": c.de_mean, "deOver": c.de_over }), &[&c.diff_png])
         }
         "quantize" => {
             let p = pal()?;

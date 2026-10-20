@@ -204,6 +204,11 @@
         <p class="hint">Colours closer than this are treated as one. It's a distance between colours, where black to white is 441: around 16 merges shades you can't tell apart, 80 merges clearly different ones, such as cream into white. Fewer colours make a smaller file.</p>
       </div>
 
+      <div class="field colour-only redraw-only">
+        <label class="check"><input id="gradients" type="checkbox"> Keep gradients</label>
+        <p class="hint">Smooth ramps of colour become gradients, and soft glows and halos become blurred shapes, instead of bands of flat colour. Each is checked against the bands it replaces and only kept where it's closer to the original. Slower, and <em>Find smallest</em> doesn't try it.</p>
+      </div>
+
       <div class="field colour-only">
         <label class="check"><input id="edgeBg" type="checkbox"> Remove the background</label>
         <p class="hint">Leaves out the colour around the artwork, such as a PNG's white background. The same colour inside the artwork, like white in an eye, is kept.</p>
@@ -378,11 +383,11 @@
     origPoints: null,
     mode: 'colour',        // 'colour' | 'mono'
     grid: 2048, tol: 0.5, alpha: 1.0, turd: 16, thr: 128, dec: 0, merge: 16, edgeBg: false,
-    protect: 6, maxCol: 24, clean: 0, edges: true, slivers: false,
+    protect: 6, maxCol: 24, clean: 0, edges: true, slivers: false, gradients: false,
     method: 'redraw',      // 'redraw' | 'tidy'
     tidyWhy: null,         // why Tidy can't read this SVG, or null when it can
     choices: { keep: [], drop: [] }, // colours the viewer locked in or left out
-    result: null,          // {svg, bytes, points, layers, diffPct, diffPng, opts}
+    result: null,          // {svg, bytes, points, layers, diffPct, deMean, deOver, diffPng, opts}
     view: 'result',
     run: 0,
     urls: [],
@@ -498,7 +503,8 @@
     return {
       palette: async (r, o, declared) => (await call({ op: 'palette', o, declared, w: r.w, h: r.h }, [r.data])).head,
       async trace(r, o, p) {
-        const split = Math.min(lanes(), p.order.length);
+        // Gradients look at the whole image at once (which bands make one ramp).
+        const split = o.gradients ? 1 : Math.min(lanes(), p.order.length);
         if (split < 2) return (await call({ op: 'trace', o, p, w: r.w, h: r.h }, [r.data])).head;
         // Quantize once, then trace the layers across the workers.
         const [idx] = (await call({ op: 'index', o, p, w: r.w, h: r.h }, [r.data])).bufs;
@@ -512,7 +518,7 @@
       sourceIndex: async (r, o, p) => (await call({ op: 'sourceIndex', o, p, w: r.w, h: r.h }, [r.data])).bufs[0],
       async compare(aIdx, a, b, o, p) {
         const res = await call({ op: 'compare', o, p, w: a.w, h: a.h, bw: b.w, bh: b.h }, [aIdx, a.data, b.data]);
-        return { diffPct: res.head.diffPct, png: res.bufs[0] };
+        return { diffPct: res.head.diffPct, deMean: res.head.deMean, deOver: res.head.deOver, png: res.bufs[0] };
       },
       tidy: async (text, o) => (await call({ op: 'tidy', o, text }, [])).head,
       async quantize(r, o, p) {
@@ -623,8 +629,8 @@
     const k = `c${o.mode}${o.merge}${o.edgeBg}${o.thr}${o.maxCol}${o.edges}${JSON.stringify(o.choices)}`;
     const aIdx = await cached(k, () => core.sourceIndex(a, o, p));
     const b = await raster({ kind: 'svg', text: svg }, CMP, mono);
-    const { diffPct, png } = await core.compare(aIdx, a, b, o, p);
-    return { diffPct, diffPng: png };
+    const { diffPct, deMean, deOver, png } = await core.compare(aIdx, a, b, o, p);
+    return { diffPct, deMean, deOver, diffPng: png };
   }
 
   function showOriginal() {
@@ -694,7 +700,8 @@
       (r.tidy
         ? `<span><b>${r.tidy.pathsIn.toLocaleString()}</b> → <b>${r.tidy.pathsOut.toLocaleString()}</b> paths</span><span><b>${r.tidy.coloursIn}</b> → <b>${r.tidy.coloursOut}</b> colours</span>${r.tidy.background ? `<span>background left out</span>` : ''}<span>tidy · merge <b>${r.opts.merge}</b></span>`
         : (r.opts.mode === 'colour' ? `<span><b>${r.layers}</b> layer${r.layers === 1 ? '' : 's'}</span>` : '') +
-          `<span>grid <b>${r.opts.grid}</b> · ${r.opts.alpha === 0 ? 'straight lines' : `smoothing <b>${r.opts.tol}</b>`}</span>`);
+          `<span>grid <b>${r.opts.grid}</b> · ${r.opts.alpha === 0 ? 'straight lines' : `smoothing <b>${r.opts.tol}</b>`}${r.opts.gradients && r.opts.mode === 'colour' ? ' · gradients' : ''}</span>`) +
+      `<span title="How far the colours are from the original's, on average (CIE ΔE: under 1 can't be seen, over 5 is noticeable), and the share of pixels over 5. See-through pixels count over white and over black, whichever is worse.">colour ΔE <b>${r.deMean.toFixed(2)}</b> · <b>${r.deOver.toFixed(1)}%</b> over 5</span>`;
     $('code').value = r.svg;
     syncActions();
     renderView();
@@ -723,7 +730,7 @@
   function releaseUrls() { state.urls.splice(0).forEach((u) => URL.revokeObjectURL(u)); }
 
   // ---------- pipeline ----------
-  const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, slivers: state.slivers, method: state.method, choices: state.choices });
+  const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, slivers: state.slivers, gradients: state.gradients, method: state.method, choices: state.choices });
 
   async function run() {
     if (!state.source) return;
@@ -780,11 +787,12 @@
     const id = ++state.run;
     const tries = [];
     // All at once: the core spreads them over the workers, or over the cores natively.
+    // Gradients stay out of it: slower, and judged by eye for now.
     const attempt = (plan) => {
       let done = 0;
       status(`Trying ${plan.length} settings…`);
       return Promise.all(plan.map(async (over) => {
-        try { tries.push(await traceOnce({ ...opts(), ...over })); }
+        try { tries.push(await traceOnce({ ...opts(), ...over, gradients: false })); }
         catch (e) { if (over.method !== 'tidy') throw e; /* Tidy declined this SVG; the redraws still count */ }
         if (id === state.run) status(`Trying ${plan.length} settings: ${++done} done…`);
       }));
@@ -812,7 +820,7 @@
       }
       const ok = tries.filter((t) => t.diffPct <= target).sort((a, b) => a.bytes - b.bytes);
       const pick = ok[0] || tries.slice().sort((a, b) => a.diffPct - b.diffPct)[0];
-      for (const k of ['method', 'grid', 'tol', 'alpha', 'merge']) state[k] = pick.opts[k];
+      for (const k of ['method', 'grid', 'tol', 'alpha', 'merge', 'gradients']) state[k] = pick.opts[k];
       syncControls();
       state.result = pick; showResult();
       status(ok.length ? `Smallest within ${target}%: ${describe(pick.opts)}.` : `Nothing got within ${target}%. Showing the closest match. Try allowing a bigger difference.`);
@@ -890,6 +898,7 @@
     $('edgeBg').checked = state.edgeBg;
     $('edges').checked = state.edges;
     $('slivers').checked = state.slivers;
+    $('gradients').checked = state.gradients;
   }
   function segClicks(id, key, numeric) {
     $(id).addEventListener('click', (e) => {
@@ -921,6 +930,7 @@
   $('edgeBg').addEventListener('change', (e) => { state.edgeBg = e.target.checked; schedule(); });
   $('edges').addEventListener('change', (e) => { state.edges = e.target.checked; schedule(); });
   $('slivers').addEventListener('change', (e) => { state.slivers = e.target.checked; schedule(); });
+  $('gradients').addEventListener('change', (e) => { state.gradients = e.target.checked; schedule(); });
 
   $('modeSeg').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;

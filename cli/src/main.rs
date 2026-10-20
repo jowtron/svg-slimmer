@@ -32,6 +32,9 @@ Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
   --clean <passes>        Majority-filter passes
   --slivers               Speck removal keeps long thin patches, such as the
                           gaps between pen strokes
+  --gradients             Keep gradients: smooth ramps become SVG gradients and
+                          soft glows and halos blurred shapes, not flat bands.
+                          Not tried by --smallest
   --background / --no-background   Remove the colour touching the border
   --no-edges              Don't restrict blended edge pixels
   --smallest              Try detail, smoothing, straight lines, stronger colour
@@ -168,6 +171,8 @@ struct Attempt {
     layers: usize,
     diff_pct: f64,
     diff_png: Vec<u8>,
+    de_mean: f64,
+    de_over: f64,
     opts: Opts,
 }
 
@@ -216,7 +221,7 @@ fn attempt(src: &Source, o: &Opts, setup: &Setup) -> Result<Attempt, String> {
     };
     let b = raster_svg(&svg, CMP, mono);
     let c = compare::compare(a_idx, &setup.a.image(), &b.image(), o, p);
-    Ok(Attempt { svg, layers, diff_pct: c.diff_pct, diff_png: c.diff_png, opts: o.clone() })
+    Ok(Attempt { svg, layers, diff_pct: c.diff_pct, diff_png: c.diff_png, de_mean: c.de_mean, de_over: c.de_over, opts: o.clone() })
 }
 
 /// One line describing how an attempt was made.
@@ -282,7 +287,7 @@ fn main() {
             "--smallest" => smallest = true,
             "--target" => target = val().parse().unwrap_or_else(|_| fail("--target takes a number")),
             "-q" | "--quiet" => quiet = true,
-            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" => set.push((a.clone(), String::new())),
+            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" => set.push((a.clone(), String::new())),
             "--preset" | "--grid" | "--smoothing" | "--corner" | "--protect" | "--decimals" | "--colours" | "--colors" | "--merge"
             | "--threshold" | "--specks" | "--clean" => {
                 let v = val();
@@ -332,6 +337,7 @@ fn main() {
             "--no-edges" => o.edges = false,
             "--tidy" => o.method = Method::Tidy,
             "--slivers" => o.slivers = true,
+            "--gradients" => o.gradients = true,
             _ => unreachable!(),
         }
     }
@@ -346,7 +352,7 @@ fn main() {
 
     let pick = if smallest {
         let run = |plan: &[Opts]| -> Vec<Attempt> { plan.par_iter().filter_map(|o| attempt(&src, o, &setup).ok()).collect() };
-        let redraw = Opts { method: Method::Redraw, ..o.clone() };
+        let redraw = Opts { method: Method::Redraw, gradients: false, ..o.clone() };
         let mut plan: Vec<Opts> = Vec::new();
         for grid in [1024, 2048] {
             for tol in [1.0, 0.5, 0.2] {
@@ -413,7 +419,7 @@ fn main() {
     if !quiet {
         let o = &pick.opts;
         eprintln!(
-            "{}: {} bytes (from {}), {} layer{}, ≈{} points, {:.3}% different; {} — {:.2} s",
+            "{}: {} bytes (from {}), {} layer{}, ≈{} points, {:.3}% different, colour ΔE {:.2} ({:.1}% over 5); {} — {:.2} s",
             out.display(),
             pick.svg.len(),
             bytes.len(),
@@ -421,6 +427,8 @@ fn main() {
             if pick.layers == 1 { "" } else { "s" },
             count_points(&pick.svg),
             pick.diff_pct,
+            pick.de_mean,
+            pick.de_over,
             describe(o),
             t0.elapsed().as_secs_f64()
         );

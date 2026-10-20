@@ -11,6 +11,7 @@
 #[cfg(feature = "api")]
 pub mod api;
 pub mod compare;
+pub mod gradient;
 pub mod index;
 pub mod palette;
 pub mod png;
@@ -91,6 +92,10 @@ pub struct Opts {
     /// lines) and only removes compact ones.
     #[serde(default)]
     pub slivers: bool,
+    /// Keep gradients: smooth ramps become SVG gradients and soft glows and
+    /// halos blurred shapes, instead of bands of flat colour (see [`gradient`]).
+    #[serde(default)]
+    pub gradients: bool,
     #[serde(default)]
     pub method: Method,
     #[serde(default)]
@@ -114,6 +119,7 @@ impl Default for Opts {
             clean: 0,
             edges: true,
             slivers: false,
+            gradients: false,
             method: Method::Redraw,
             choices: Choices::default(),
         }

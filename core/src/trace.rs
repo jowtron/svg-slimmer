@@ -3,19 +3,19 @@
 use crate::index::index_map;
 use crate::palette::Pal;
 use crate::potrace::{self, Curve, Params, Seg};
-use crate::{js_round, to_hex, Image, Opts};
+use crate::{js_round, to_hex, Image, Mode, Opts};
 
 /// A path command with Potrace's coordinates rounded to three decimals, as the
 /// JS version read them back from Potrace's SVG text.
 #[derive(Clone, Copy)]
-enum Cmd {
+pub(crate) enum Cmd {
     M([f64; 2]),
     C([f64; 6]),
     L([f64; 4]),
 }
 
 /// One closed path of a layer.
-type Sub = Vec<Cmd>;
+pub(crate) type Sub = Vec<Cmd>;
 
 /// `parseFloat(v.toFixed(3))`: rounded to three decimals, exact halves away from zero.
 fn fixed3(v: f64) -> f64 {
@@ -96,7 +96,7 @@ fn span(sub: &Sub) -> f64 {
 /// Smoothing merges curve segments, which is invisible on a big sweeping edge
 /// and obvious on an eye or a letter. So trace twice and let every shape smaller
 /// than the "protect" size take the lightly smoothed version.
-fn trace_layer(bits: &[u8], w: usize, h: usize, o: &Opts) -> Vec<Sub> {
+pub(crate) fn trace_layer(bits: &[u8], w: usize, h: usize, o: &Opts) -> Vec<Sub> {
     let params = Params { turdsize: 2, alphamax: o.alpha, opttolerance: o.tol };
     if o.protect == 0.0 || o.tol <= 0.15 {
         return subpaths(&potrace::trace(w, h, bits, &params));
@@ -111,8 +111,40 @@ fn trace_layer(bits: &[u8], w: usize, h: usize, o: &Opts) -> Vec<Sub> {
     coarse.into_iter().zip(fine).map(|(a, b)| if span(&b) < limit { b } else { a }).collect()
 }
 
+/// Trace a shape at 1/`f` of its size and scale the result back up: for shapes
+/// that are blurred, or only clip, detail finer than `f` px never shows.
+pub(crate) fn coarse_d(bits: &[u8], w: usize, h: usize, o: &Opts, f: usize) -> String {
+    if f <= 1 {
+        return compact_path(&trace_layer(bits, w, h, o), o.dec);
+    }
+    let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
+    let mut cnt = vec![0usize; sw * sh];
+    for y in 0..h {
+        for x in 0..w {
+            if bits[y * w + x] != 0 {
+                cnt[(y / f) * sw + x / f] += 1;
+            }
+        }
+    }
+    let small: Vec<u8> = cnt.iter().map(|&c| (c * 2 >= f * f) as u8).collect();
+    let k = f as f64;
+    let subs: Vec<Sub> = trace_layer(&small, sw, sh, &Opts { protect: 0.0, ..o.clone() })
+        .into_iter()
+        .map(|sub| {
+            sub.into_iter()
+                .map(|c| match c {
+                    Cmd::M(p) => Cmd::M(p.map(|v| v * k)),
+                    Cmd::C(p) => Cmd::C(p.map(|v| v * k)),
+                    Cmd::L(p) => Cmd::L(p.map(|v| v * k)),
+                })
+                .collect()
+        })
+        .collect();
+    compact_path(&subs, o.dec)
+}
+
 /// Write the paths as rounded relative commands.
-fn compact_path(subs: &[Sub], dec: u32) -> String {
+pub(crate) fn compact_path(subs: &[Sub], dec: u32) -> String {
     let f = 10f64.powi(dec as i32);
     let r = |v: f64| js_round(v * f) / f;
     let num = |v: f64| {
@@ -191,7 +223,7 @@ fn compact_path(subs: &[Sub], dec: u32) -> String {
 }
 
 /// The index map's rank of each palette colour: its position in the paint order.
-fn ranks(p: &Pal) -> Vec<i32> {
+pub(crate) fn ranks(p: &Pal) -> Vec<i32> {
     let mut rank = vec![-1i32; p.pal.len()];
     for (k, &ci) in p.order.iter().enumerate() {
         rank[ci] = k as i32;
@@ -203,15 +235,19 @@ fn ranks(p: &Pal) -> Vec<i32> {
 /// painted above it, so no gaps open between colours. Returns the `<path>`
 /// element, or None when the layer is empty.
 pub fn layer(idx: &[i16], w: usize, h: usize, o: &Opts, p: &Pal, k: usize) -> Option<String> {
-    let rank = ranks(p);
-    let bits: Vec<u8> = idx.iter().map(|&v| (v >= 0 && rank[v as usize] >= k as i32) as u8).collect();
-    let d = compact_path(&trace_layer(&bits, w, h, o), o.dec);
+    let d = layer_d(idx, w, h, o, &ranks(p), k);
     if d.is_empty() {
         return None;
     }
     let hex = to_hex(p.pal[p.order[k]]);
     let fill = if hex == "#000000" { String::new() } else { format!(" fill=\"{}\"", hex) };
     Some(format!("<path{} d=\"{}\"/>", fill, d))
+}
+
+/// The path data of layer `k`: every pixel ranked `k` or above.
+pub(crate) fn layer_d(idx: &[i16], w: usize, h: usize, o: &Opts, rank: &[i32], k: usize) -> String {
+    let bits: Vec<u8> = idx.iter().map(|&v| (v >= 0 && rank[v as usize] >= k as i32) as u8).collect();
+    compact_path(&trace_layer(&bits, w, h, o), o.dec)
 }
 
 pub fn svg(w: usize, h: usize, paths: &[String]) -> String {
@@ -222,7 +258,15 @@ pub fn svg(w: usize, h: usize, paths: &[String]) -> String {
 /// Layers are traced in parallel when the `parallel` feature is on.
 pub fn trace(r: &Image, o: &Opts, p: &Pal) -> Traced {
     let idx = index_map(r, o, p);
-    let run = |k: usize| layer(&idx, r.w, r.h, o, p, k);
+    if o.gradients && o.mode == Mode::Colour {
+        return crate::gradient::trace(r, o, p, &idx);
+    }
+    trace_index(&idx, r.w, r.h, o, p)
+}
+
+/// Trace every layer of an index map.
+pub(crate) fn trace_index(idx: &[i16], w: usize, h: usize, o: &Opts, p: &Pal) -> Traced {
+    let run = |k: usize| layer(idx, w, h, o, p, k);
     #[cfg(feature = "parallel")]
     let paths: Vec<Option<String>> = {
         use rayon::prelude::*;
@@ -231,7 +275,7 @@ pub fn trace(r: &Image, o: &Opts, p: &Pal) -> Traced {
     #[cfg(not(feature = "parallel"))]
     let paths: Vec<Option<String>> = (0..p.order.len()).map(run).collect();
     let paths: Vec<String> = paths.into_iter().flatten().collect();
-    Traced { layers: paths.len(), svg: svg(r.w, r.h, &paths) }
+    Traced { layers: paths.len(), svg: svg(w, h, &paths) }
 }
 
 pub struct Traced {
