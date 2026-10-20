@@ -97,6 +97,10 @@ fn span(sub: &Sub) -> f64 {
 /// and obvious on an eye or a letter. So trace twice and let every shape smaller
 /// than the "protect" size take the lightly smoothed version.
 pub(crate) fn trace_layer(bits: &[u8], w: usize, h: usize, o: &Opts) -> Vec<Sub> {
+    let s = w.max(h) as f64 / o.src as f64;
+    if o.src > 0 && s >= 1.5 {
+        return native(bits, w, h, o, s);
+    }
     let params = Params { turdsize: 2, alphamax: o.alpha, opttolerance: o.tol };
     if o.protect == 0.0 || o.tol <= 0.15 {
         return subpaths(&potrace::trace(w, h, bits, &params));
@@ -109,6 +113,36 @@ pub(crate) fn trace_layer(bits: &[u8], w: usize, h: usize, o: &Opts) -> Vec<Sub>
     }
     let limit = w.max(h) as f64 * o.protect / 100.0;
     coarse.into_iter().zip(fine).map(|(a, b)| if span(&b) < limit { b } else { a }).collect()
+}
+
+/// Trace a shape at the bitmap's own size, 1/`s` of the grid, where its
+/// jaggies are one pixel high and the tracer smooths them away, then scale it
+/// back up. Each small pixel is set when most of the grid pixels in it are.
+fn native(bits: &[u8], w: usize, h: usize, o: &Opts, s: f64) -> Vec<Sub> {
+    let (sw, sh) = ((w as f64 / s).ceil() as usize, (h as f64 / s).ceil() as usize);
+    let (mut on, mut all) = (vec![0u32; sw * sh], vec![0u32; sw * sh]);
+    for y in 0..h {
+        let row = ((y as f64 / s) as usize).min(sh - 1) * sw;
+        for x in 0..w {
+            let k = row + ((x as f64 / s) as usize).min(sw - 1);
+            all[k] += 1;
+            on[k] += bits[y * w + x] as u32;
+        }
+    }
+    let small: Vec<u8> = on.iter().zip(&all).map(|(&n, &a)| (a > 0 && n * 2 >= a) as u8).collect();
+    // Smoothing is a distance: keep it the same on the grid.
+    trace_layer(&small, sw, sh, &Opts { src: 0, tol: o.tol / s, ..o.clone() })
+        .into_iter()
+        .map(|sub| {
+            sub.into_iter()
+                .map(|c| match c {
+                    Cmd::M(p) => Cmd::M(p.map(|v| v * s)),
+                    Cmd::C(p) => Cmd::C(p.map(|v| v * s)),
+                    Cmd::L(p) => Cmd::L(p.map(|v| v * s)),
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Trace a shape at 1/`f` of its size and scale the result back up: for shapes
@@ -128,7 +162,7 @@ pub(crate) fn coarse_d(bits: &[u8], w: usize, h: usize, o: &Opts, f: usize) -> S
     }
     let small: Vec<u8> = cnt.iter().map(|&c| (c * 2 >= f * f) as u8).collect();
     let k = f as f64;
-    let subs: Vec<Sub> = trace_layer(&small, sw, sh, &Opts { protect: 0.0, ..o.clone() })
+    let subs: Vec<Sub> = trace_layer(&small, sw, sh, &Opts { protect: 0.0, src: 0, ..o.clone() })
         .into_iter()
         .map(|sub| {
             sub.into_iter()

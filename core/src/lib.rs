@@ -96,6 +96,11 @@ pub struct Opts {
     /// halos blurred shapes, instead of bands of flat colour (see [`gradient`]).
     #[serde(default)]
     pub gradients: bool,
+    /// A bitmap's own long side in pixels (0 for vector art). Drawn bigger
+    /// than this, its one-pixel jaggies become steps several pixels high,
+    /// which the tracer takes for detail, so shapes are traced at this size.
+    #[serde(default)]
+    pub src: usize,
     #[serde(default)]
     pub method: Method,
     #[serde(default)]
@@ -120,6 +125,7 @@ impl Default for Opts {
             edges: true,
             slivers: false,
             gradients: false,
+            src: 0,
             method: Method::Redraw,
             choices: Choices::default(),
         }

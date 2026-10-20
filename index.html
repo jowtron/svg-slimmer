@@ -383,7 +383,7 @@
     origPoints: null,
     mode: 'colour',        // 'colour' | 'mono'
     grid: 2048, tol: 0.5, alpha: 1.0, turd: 16, thr: 128, dec: 0, merge: 16, edgeBg: false,
-    protect: 6, maxCol: 24, clean: 0, edges: true, slivers: false, gradients: false,
+    protect: 6, maxCol: 24, clean: 0, edges: true, slivers: false, gradients: false, src: 0,
     method: 'redraw',      // 'redraw' | 'tidy'
     tidyWhy: null,         // why Tidy can't read this SVG, or null when it can
     choices: { keep: [], drop: [] }, // colours the viewer locked in or left out
@@ -730,7 +730,7 @@
   function releaseUrls() { state.urls.splice(0).forEach((u) => URL.revokeObjectURL(u)); }
 
   // ---------- pipeline ----------
-  const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, slivers: state.slivers, gradients: state.gradients, method: state.method, choices: state.choices });
+  const opts = () => ({ mode: state.mode, grid: state.grid, tol: state.tol, alpha: state.alpha, turd: state.turd, thr: state.thr, dec: state.dec, merge: state.merge, edgeBg: state.edgeBg, protect: state.protect, maxCol: state.maxCol, clean: state.clean, edges: state.edges, slivers: state.slivers, gradients: state.gradients, src: state.src, method: state.method, choices: state.choices });
 
   async function run() {
     if (!state.source) return;
@@ -839,6 +839,12 @@
     origOpt.hidden = origOpt.disabled = !bitmap;
     if (!bitmap && $('pngSize').value === 'orig') $('pngSize').value = '2048';
     state.edgeBg = bitmap; state.maxCol = bitmap ? 8 : 24; state.clean = bitmap ? 1 : 0;
+    // A bitmap's own size: drawn bigger, its shapes are traced at this size.
+    state.src = 0;
+    if (bitmap) {
+      try { const img = state.cache.img = await loadImage(blobUrl(src.blob)); state.src = Math.max(img.naturalWidth, img.naturalHeight); }
+      catch { /* raster() reports it */ }
+    }
     state.method = 'redraw'; state.tidyWhy = bitmap ? 'it is a bitmap' : null;
     if (!bitmap) {
       try { const t = await core.tidy(src.text, opts()); state.tidyWhy = t.unsupported || null; }

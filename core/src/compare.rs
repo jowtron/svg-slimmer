@@ -109,9 +109,13 @@ pub fn compare(a_idx: &[i16], a: &Image, b: &Image, o: &Opts, p: &Pal) -> Compar
     // A pixel only counts as changed if the other image has no pixel of the
     // same colour within one pixel of it. Edges that moved by less than a
     // hairline are invisible, and otherwise swamp the count on busy artwork.
+    // A bitmap drawn bigger than its own size can't place an edge closer than
+    // one of its own pixels, so there it's within half of one.
+    let s = w.max(h) as f64 / o.src as f64;
+    let r = if o.src > 0 && s >= 1.5 { (s / 2.0).ceil() as usize } else { 1 };
     let near = |idx: &[i16], iw: usize, x: usize, y: usize, v: i16| {
-        for yy in y.saturating_sub(1)..=(y + 1).min(h - 1) {
-            for xx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+        for yy in y.saturating_sub(r)..=(y + r).min(h - 1) {
+            for xx in x.saturating_sub(r)..=(x + r).min(w - 1) {
                 if idx[yy * iw + xx] == v {
                     return true;
                 }

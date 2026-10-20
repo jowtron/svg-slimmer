@@ -311,7 +311,13 @@ fn main() {
     };
 
     // Defaults as the web app sets them for this kind of file.
-    let mut o = Opts { edge_bg: !is_svg, max_col: if is_svg { 24 } else { 8 }, clean: if is_svg { 0 } else { 1 }, ..Opts::default() };
+    let mut o = Opts {
+        edge_bg: !is_svg,
+        max_col: if is_svg { 24 } else { 8 },
+        clean: if is_svg { 0 } else { 1 },
+        src: if let Source::Bitmap(img) = &src { img.width().max(img.height()) as usize } else { 0 },
+        ..Opts::default()
+    };
     let num = |k: &str, v: &str| -> f64 { v.parse().unwrap_or_else(|_| fail(format!("{k} takes a number"))) };
     for (k, v) in &set {
         match k.as_str() {
