@@ -45,6 +45,24 @@
   .field label,.field .label{font-weight:600}
   .field .val{font-family:var(--mono);font-size:.82rem;color:var(--ink);font-variant-numeric:tabular-nums}
   .hint{margin:0;color:var(--muted);font-size:.84rem;line-height:1.4}
+  .hint.tip{display:none}
+  .tip-head{display:inline-flex;align-items:center;gap:6px;min-width:0}
+  div.tip-head{display:flex}
+  .info{flex:none;box-sizing:border-box;width:17px;height:17px;padding:0;border-radius:50%;border:1px solid var(--muted);background:none;color:var(--muted);font:600 .68rem/1 var(--ui);display:inline-grid;place-items:center;cursor:help}
+  .info:hover,.info[aria-expanded="true"]{border-color:var(--accent);color:var(--accent)}
+  .info:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .tip-pop{position:fixed;z-index:50;box-sizing:border-box;margin:0;padding:10px 12px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);font-size:.86rem;line-height:1.45}
+  .scale{display:flex;justify-content:space-between;gap:8px;margin-top:-2px;font-size:.74rem;color:var(--muted)}
+  .scale span{display:inline-flex;align-items:center;gap:5px}
+  .size-tag{font:600 .64rem/1.5 var(--ui);letter-spacing:.04em;text-transform:uppercase;color:var(--good);background:color-mix(in srgb,var(--good) 13%,transparent);border-radius:4px;padding:0 5px;white-space:nowrap}
+  .versions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .ver-label{font-size:.86rem;color:var(--muted);margin-right:2px}
+  .ver{display:grid;text-align:left;gap:1px;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);cursor:pointer;font:500 .8rem var(--ui)}
+  .ver small{font:.72rem var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+  .ver:hover{border-color:var(--accent)}
+  .ver[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+  .ver.best small::after{content:" · closest";color:var(--good);font-weight:500}
+  .ver:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .term{font-family:var(--mono);font-size:.72rem;color:var(--muted);letter-spacing:.02em}
   input[type=range]{width:100%;accent-color:var(--accent)}
   .seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -188,20 +206,20 @@
       <div class="field colour-only">
         <div class="field-head"><span class="label">Palette</span><span class="val" id="palCount"></span></div>
         <ul class="swatches" id="swatches" aria-label="Colours, bottom layer first"></ul>
-        <p class="hint">Percentages are each colour's share of the artwork, background left out. Click a colour once to lock it in, so it stays however far you reduce <em>Most colours</em>. Click again to leave it out, and its pixels go to the nearest colour left; a third click hands it back. Faded colours were merged away: click one to bring it back, locked. <button type="button" class="linkish" id="palReset" hidden>Reset colours</button></p>
-        <p class="hint redraw-only">Traced as stacked layers, bottom first. Each layer runs under the ones above it, so no gaps open between colours.</p>
-        <p class="hint tidy-only">With <em>Tidy</em> these are the SVG's own colours, biggest first. Each one kept is a real colour from the file; a colour merged or left out takes the nearest kept one.</p>
+        <p class="hint keep">Percentages are each colour's share of the artwork, background left out. Click a colour once to lock it in, so it stays however far you reduce <em>Most colours</em>. Click again to leave it out, and its pixels go to the nearest colour left; a third click hands it back. Faded colours were merged away: click one to bring it back, locked. <button type="button" class="linkish" id="palReset" hidden>Reset colours</button></p>
+        <p class="hint keep redraw-only">Traced as stacked layers, bottom first. Each layer runs under the ones above it, so no gaps open between colours.</p>
+        <p class="hint keep tidy-only">With <em>Tidy</em> these are the SVG's own colours, biggest first. Each one kept is a real colour from the file; a colour merged or left out takes the nearest kept one.</p>
       </div>
 
       <div class="field colour-only">
         <div class="field-head"><label for="maxCol">Most colours</label><span class="val" id="maxColV">24</span></div>
-        <input id="maxCol" type="range" min="2" max="24" step="1" value="24">
+        <input id="maxCol" data-ends="Fewer colours|More colours" data-smaller="left" type="range" min="2" max="24" step="1" value="24">
         <p class="hint">For photos, gradients and AI images. The closest colours merge until this many are left; small distinct ones, like an eye, are kept. A removed background counts as one of them.</p>
       </div>
 
       <div class="field colour-only">
         <div class="field-head"><label for="merge">Merge similar colours</label><span class="val" id="mergeV">16</span></div>
-        <input id="merge" type="range" min="0" max="80" step="2" value="16">
+        <input id="merge" data-ends="Keep shades apart|Merge more" data-smaller="right" type="range" min="0" max="80" step="2" value="16">
         <p class="hint">Colours closer than this are treated as one. It's a distance between colours, where black to white is 441: around 16 merges shades you can't tell apart, 80 merges clearly different ones, such as cream into white. Fewer colours make a smaller file.</p>
       </div>
 
@@ -231,13 +249,13 @@
 
       <div class="field colour-only redraw-only">
         <div class="field-head"><label for="clean">Clean up edges</label><span class="val" id="cleanV">0</span></div>
-        <input id="clean" type="range" min="0" max="3" step="1" value="0">
+        <input id="clean" data-ends="Off|Smoother edges" data-smaller="right" type="range" min="0" max="3" step="1" value="0">
         <p class="hint">Smooths out speckle and ragged edges from noisy or upscaled images before tracing.</p>
       </div>
 
       <div class="field redraw-only">
         <div class="field-head"><span class="label" id="gridLabel">Detail</span><span class="term">trace grid</span></div>
-        <div class="seg" role="group" aria-labelledby="gridLabel" id="gridSeg">
+        <div class="seg" role="group" aria-labelledby="gridLabel" id="gridSeg" data-ends="Less detail|More detail" data-smaller="left">
           <button type="button" data-v="1024">1024</button>
           <button type="button" data-v="2048" aria-pressed="true">2048</button>
           <button type="button" data-v="4096">4096</button>
@@ -247,25 +265,25 @@
 
       <div class="field redraw-only">
         <div class="field-head"><label for="tol">Smoothing</label><span class="val" id="tolV">0.5</span></div>
-        <input id="tol" type="range" min="0.1" max="1.5" step="0.1" value="0.5">
+        <input id="tol" data-ends="Follow closely|Smoother curves" data-smaller="right" type="range" min="0.1" max="1.5" step="0.1" value="0.5">
         <p class="hint">How far a curve may drift to merge into fewer, longer ones. <span class="term">opttolerance</span></p>
       </div>
 
       <div class="field redraw-only">
         <div class="field-head"><label for="protect">Protect small shapes</label><span class="val" id="protectV">6%</span></div>
-        <input id="protect" type="range" min="0" max="25" step="1" value="6">
+        <input id="protect" data-ends="Off|Protect more" data-smaller="left" type="range" min="0" max="25" step="1" value="6">
         <p class="hint">Shapes smaller than this share of the image, such as eyes, letters and thin lines, are traced with almost no smoothing. Big curves still get the full amount.</p>
       </div>
 
       <div class="field redraw-only">
         <div class="field-head"><label for="alpha">Corners</label><span class="val" id="alphaV">1.0</span></div>
-        <input id="alpha" type="range" min="0" max="1.3" step="0.1" value="1.0">
+        <input id="alpha" data-ends="Straight lines|Round corners" data-smaller="left" type="range" min="0" max="1.3" step="0.1" value="1.0">
         <p class="hint">Lower keeps sharp corners, higher rounds them off. At 0 every edge is a straight line, which is often smaller on busy artwork such as pen hatching. <span class="term">alphamax</span></p>
       </div>
 
       <div class="field redraw-only">
         <div class="field-head"><label for="turd">Remove specks</label><span class="val" id="turdV">16 px</span></div>
-        <input id="turd" type="range" min="0" max="100" step="2" value="16">
+        <input id="turd" data-ends="Keep specks|Remove more" data-smaller="right" type="range" min="0" max="100" step="2" value="16">
         <p class="hint">Any patch of colour smaller than this takes the colour around it, in the PNG and the trace. Measured at 2048 px across and scaled to the size you export.</p>
       </div>
 
@@ -276,13 +294,13 @@
 
       <div class="field mono-only redraw-only" hidden>
         <div class="field-head"><label for="thr">Threshold</label><span class="val" id="thrV">128</span></div>
-        <input id="thr" type="range" min="1" max="254" step="1" value="128">
+        <input id="thr" data-ends="Darkest only|More becomes shape" type="range" min="1" max="254" step="1" value="128">
         <p class="hint">Anything darker than this becomes the shape.</p>
       </div>
 
       <div class="field redraw-only">
         <div class="field-head"><span class="label" id="decLabel">Decimal places</span></div>
-        <div class="seg" role="group" aria-labelledby="decLabel" id="decSeg">
+        <div class="seg" role="group" aria-labelledby="decLabel" id="decSeg" data-ends="Whole pixels|Finer" data-smaller="left">
           <button type="button" data-v="0" aria-pressed="true">0</button>
           <button type="button" data-v="1">1</button>
         </div>
@@ -303,7 +321,7 @@
         <div class="field">
           <label for="aiKey">OpenRouter key</label>
           <input id="aiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…">
-          <p class="hint">From openrouter.ai/keys. Kept on this device only and sent nowhere but OpenRouter. <button type="button" class="linkish" id="aiForget" hidden>Forget it</button></p>
+          <p class="hint keep">From openrouter.ai/keys. Kept on this device only and sent nowhere but OpenRouter. <button type="button" class="linkish" id="aiForget" hidden>Forget it</button></p>
         </div>
         <div class="field">
           <label for="aiModel">Model</label>
@@ -321,7 +339,7 @@
         </div>
         <div class="auto-row">
           <button class="btn primary" type="button" id="aiBtn">Redraw with AI</button>
-          <button class="btn" type="button" id="aiMore" hidden>One more round</button>
+          <button class="btn" type="button" id="aiMore" title="Asks the model to improve the AI round on show" hidden>One more round</button>
         </div>
         <p class="hint" id="aiNote" hidden></p>
       </div>
@@ -349,6 +367,8 @@
         <label class="check small"><input id="autoRun" type="checkbox" checked> Update automatically</label>
         <button class="btn" type="button" id="traceBtn" hidden>Trace</button>
       </div>
+
+      <div class="versions" id="versions" role="group" aria-label="Versions to show" hidden></div>
 
       <div class="views">
         <div class="panel view">
@@ -427,6 +447,7 @@
     tidyWhy: null,         // why Tidy can't read this SVG, or null when it can
     choices: { keep: [], drop: [] }, // colours the viewer locked in or left out
     result: null,          // {svg, bytes, points, layers, diffPct, deMean, deOver, diffPng, opts}
+    trace: null,           // the latest result that isn't an AI round, kept while AI rounds are shown
     view: 'result',
     run: 0,
     urls: [],
@@ -748,8 +769,27 @@
       `<span title="How far the colours are from the original's, on average (CIE ΔE: under 1 can't be seen, over 5 is noticeable), and the share of pixels over 5. See-through pixels count over white and over black, whichever is worse.">colour ΔE <b>${r.deMean.toFixed(2)}</b> · <b>${r.deOver.toFixed(1)}%</b> over 5</span>`;
     $('code').value = r.svg;
     syncActions();
+    syncVersions();
     renderView();
   }
+
+  // The latest trace and every AI round, to flick between without losing any.
+  const versions = () => [state.trace, ...ai.rounds].filter(Boolean);
+  function syncVersions() {
+    const box = $('versions'), list = versions();
+    box.hidden = !ai.rounds.length;
+    if (box.hidden) return;
+    const best = list.reduce((a, b) => (b.deMean < a.deMean ? b : a));
+    const several = new Set(ai.rounds.map((r) => r.ai.series)).size > 1;
+    box.innerHTML = '<span class="ver-label">Show</span>' + list.map((r, i) => {
+      const name = r.ai ? `${r.ai.name} · ${several ? `try ${r.ai.series}, ` : ''}round ${r.ai.round}` : r.tidy ? 'Tidy' : 'Trace';
+      return `<button type="button" class="ver${r === best ? ' best' : ''}" data-i="${i}" aria-pressed="${r === state.result}"${r === best ? ' title="Closest to the original"' : ''}><b>${name}</b><small>${fmtBytes(r.bytes)} · ΔE ${r.deMean.toFixed(1)}</small></button>`;
+    }).join('');
+  }
+  $('versions').addEventListener('click', (e) => {
+    const b = e.target.closest('.ver');
+    if (b) { state.result = versions()[+b.dataset.i]; showResult(); status(''); }
+  });
 
   function renderView() {
     const r = state.result; if (!r) return;
@@ -786,7 +826,7 @@
       await showPalette();
       const res = await traceOnce(opts());
       if (id !== state.run) return;
-      state.result = res; showResult(); status(''); $('traceBtn').classList.remove('primary');
+      state.result = state.trace = res; showResult(); status(''); $('traceBtn').classList.remove('primary');
       if (state.method === 'tidy') showPalette();
       if (state.method === 'redraw') suggestTidy(res, id);
     } catch (e) { if (id === state.run) status(e.message || String(e)); }
@@ -868,7 +908,7 @@
       const pick = ok[0] || tries.slice().sort((a, b) => a.diffPct - b.diffPct)[0];
       for (const k of ['method', 'grid', 'tol', 'alpha', 'merge', 'gradients']) state[k] = pick.opts[k];
       syncControls();
-      state.result = pick; showResult();
+      state.result = state.trace = pick; showResult();
       status(ok.length ? `Smallest within ${target}%: ${describe(pick.opts)}.` : `Nothing got within ${target}%. Showing the closest match. Try allowing a bigger difference.`);
     } catch (e) { if (id === state.run) status(e.message || String(e)); }
     finally { btn.disabled = false; }
@@ -1167,7 +1207,9 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
 \`\`\``;
   const fill = (t, v) => t.replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
 
-  const ai = { best: null, round: 0, cost: 0, model: '', busy: null };
+  // Every AI round kept, so they can be flicked between. A series is one
+  // Redraw with AI and the rounds built on it; tries and spent are per series.
+  const ai = { rounds: [], series: 0, tries: {}, spent: {}, busy: null };
   let aiKey = '';
   try { aiKey = localStorage.getItem('svgslim-openrouter') || ''; } catch { /* storage blocked */ }
   $('aiKey').value = aiKey; $('aiForget').hidden = !aiKey;
@@ -1186,13 +1228,14 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
 
   function aiReset() {
     if (ai.busy) ai.busy.abort();
-    Object.assign(ai, { best: null, round: 0, cost: 0, model: '', busy: null });
+    Object.assign(ai, { rounds: [], series: 0, tries: {}, spent: {}, busy: null });
+    state.trace = null;
     syncAi();
   }
   function syncAi() {
     $('aiBtn').textContent = ai.busy ? 'Stop' : 'Redraw with AI';
     $('aiBtn').disabled = !state.source && !ai.busy;
-    $('aiMore').hidden = !ai.best || !!ai.busy;
+    $('aiMore').hidden = !ai.rounds.length || !!ai.busy;
     $('aiModel').disabled = $('aiMore').disabled = !!ai.busy;
   }
 
@@ -1323,12 +1366,15 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
     if (!state.source) return;
     if (!aiKey) { status('Paste your OpenRouter key under AI redraw first.'); $('aiKey').focus(); return; }
     const model = $('aiModel').value, name = $('aiModel').selectedOptions[0].textContent.split(' · ')[0];
-    // Redraw starts afresh; one more round improves on the best so far, with
-    // whichever model is chosen now.
-    if (fresh || !ai.best) Object.assign(ai, { best: null, round: 0, cost: 0 });
-    ai.model = model;
+    // Redraw with AI starts a new series. One more round improves the AI round
+    // on show, or the closest of the latest series while the trace is on show,
+    // with whichever model is chosen now.
+    const closest = (list) => list.reduce((a, b) => (!a || b.deMean < a.deMean ? b : a), null);
+    let base = null;
+    if (!fresh) base = (state.result && state.result.ai && state.result) || closest(ai.rounds.filter((r) => r.ai.series === ai.series)) || closest(ai.rounds);
+    const series = base ? base.ai.series : ++ai.series;
     const ctl = ai.busy = new AbortController(); syncAi();
-    const id = ++state.run;
+    const id = ++state.run, source = state.source;
     try {
       const o = { ...opts(), mode: 'colour', method: 'redraw' }, p = await paletteFor(o);
       const nat = state.src || AI_UP;
@@ -1336,52 +1382,56 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
       const { w, h } = up, bd = aiBackdrop(up);
       const orig = { type: 'image_url', image_url: { url: pngUrl(flatCanvas(up, bd.css)) } };
       let content;
-      if (!ai.best) {
+      if (!base) {
         const hints = aiHints(p, bd);
         const text = $('aiStart').checked ? fill(AI_START, { w, h, hints, svg: await roughTrace(w, h) }) : fill(AI_FIRST, { w, h, hints });
         content = [{ type: 'text', text }, orig];
       } else {
-        const b = ai.best;
+        const b = base;
         const extra = (bd.name ? ` Where the original is transparent, the pictures show plain ${bd.name}.` : '') +
           (/<text[\s>]/.test(b.svg) ? ' It uses <text>, which renders in whatever font each computer has: draw the lettering as paths.' : '');
         content = [{ type: 'text', text: fill(AI_AGAIN, { w, h, de: b.heat.de.toFixed(2), bad: b.heat.bad.toFixed(1), extra, svg: b.svg.trim() }) }, orig, { type: 'image_url', image_url: { url: b.sheet } }];
       }
-      const n = ai.round + 1;
+      const n = (ai.tries[series] || 0) + 1;
       status(`${name}, round ${n}: drawing… (often a minute or two)`);
       const t0 = Date.now();
       const { text, cost } = await aiAsk(model, content, ctl.signal);
-      ai.cost += cost; ai.round = n;
+      ai.tries[series] = n; ai.spent[series] = (ai.spent[series] || 0) + cost;
       const svg = cleanSvg(text, w, h);
       if (!svg) {
         // Say what it said instead: it is usually a reason.
         const said = text.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/\s+/g, ' ').trim();
-        throw new Error(`${name} didn't send back a readable SVG in round ${n}${said ? `. It said: “${said.length > 240 ? `${said.slice(0, 240)}…` : said}”` : ''}. ${ai.best ? 'Try one more round' : 'Press Redraw with AI to try again'}, or pick another model.`);
+        throw new Error(`${name} didn't send back a readable SVG in round ${n}${said ? `. It said: “${said.length > 240 ? `${said.slice(0, 240)}…` : said}”` : ''}. ${base ? 'Try one more round' : 'Press Redraw with AI to try again'}, or pick another model.`);
       }
       status(`${name}, round ${n}: checking…`);
       const cmp = await compare(svg, o, p);
-      const res = { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers: 0, ...cmp, opts: o, ai: { name, round: n, cost: ai.cost } };
-      const better = !ai.best || res.deMean < ai.best.deMean;
-      if (better) {
-        // Original | drawing | difference, for the next round to look at.
-        const draw = await raster({ kind: 'svg', text: svg }, Math.max(w, h), false);
-        const heat = heatMap(up, draw);
-        const s = Math.min(1, 1500 / (3 * w)), sw = Math.round(w * s), sh = Math.round(h * s);
-        const c = canvasOf(3 * sw, sh), ctx = c.getContext('2d');
-        ctx.fillStyle = bd.css; ctx.fillRect(0, 0, 2 * sw, sh);
-        ctx.drawImage(imageCanvas(up), 0, 0, sw, sh); ctx.drawImage(imageCanvas(draw), sw, 0, sw, sh);
-        const hc = canvasOf(w, h); hc.getContext('2d').putImageData(heat.img, 0, 0); ctx.drawImage(hc, 2 * sw, 0, sw, sh);
-        // The Difference view shows the heat map too: the palette's red marks
-        // would light up every gradient.
-        res.diffPng = new Uint8Array(await (await new Promise((r) => hc.toBlob(r, 'image/png'))).arrayBuffer());
-        ai.best = { ...res, heat, sheet: pngUrl(c) };
-      }
+      const res = { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers: 0, ...cmp, opts: o, ai: { name, round: n, series, cost: ai.spent[series] } };
+      // Compared with the round it was built on (a fresh series has none).
+      const better = !base || res.deMean < base.deMean;
+      // Original | drawing | difference, for a later round to look at.
+      const draw = await raster({ kind: 'svg', text: svg }, Math.max(w, h), false);
+      const heat = heatMap(up, draw);
+      const s = Math.min(1, 1500 / (3 * w)), sw = Math.round(w * s), sh = Math.round(h * s);
+      const c = canvasOf(3 * sw, sh), ctx = c.getContext('2d');
+      ctx.fillStyle = bd.css; ctx.fillRect(0, 0, 2 * sw, sh);
+      ctx.drawImage(imageCanvas(up), 0, 0, sw, sh); ctx.drawImage(imageCanvas(draw), sw, 0, sw, sh);
+      const hc = canvasOf(w, h); hc.getContext('2d').putImageData(heat.img, 0, 0); ctx.drawImage(hc, 2 * sw, 0, sw, sh);
+      // The Difference view shows the heat map too: the palette's red marks
+      // would light up every gradient.
+      res.diffPng = new Uint8Array(await (await new Promise((r) => hc.toBlob(r, 'image/png'))).arrayBuffer());
+      // Only the scores are kept from the heat map: a full-size image per
+      // round would add up.
+      res.heat = { de: heat.de, bad: heat.bad }; res.sheet = pngUrl(c);
+      if (state.source !== source) return; // another image was opened meanwhile
+      ai.rounds.push(res);
+      syncVersions();
       if (id === state.run) {
-        state.result = better ? res : { ...ai.best, ai: { ...ai.best.ai, cost: ai.cost } };
+        state.result = better ? res : base;
         showResult();
         const secs = Math.round((Date.now() - t0) / 1000);
         status(better
           ? `${name}, round ${n}: ΔE ${res.deMean.toFixed(2)} in ${secs} s, $${cost.toFixed(3)}. One more round asks it to fix what's still different.`
-          : `${name}, round ${n} came out worse (ΔE ${res.deMean.toFixed(2)}), so the best so far, round ${ai.best.ai.round}, stays. $${cost.toFixed(3)} this round.`);
+          : `${name}, round ${n} came out worse (ΔE ${res.deMean.toFixed(2)}) than round ${base.ai.round}, so round ${base.ai.round} stays on show. Both are in the list above the pictures. $${cost.toFixed(3)} this round.`);
       }
     } catch (e) {
       if (e.name === 'AbortError') status('AI redraw stopped.');
@@ -1393,6 +1443,69 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
   $('aiBtn').addEventListener('click', () => aiRound(true));
   $('aiMore').addEventListener('click', () => aiRound(false));
   syncAi();
+
+  // ---------- slider ends and help pop-ups ----------
+  // Under each slider (and the Detail and Decimal places choices), what each
+  // end does, with the end that makes a smaller file tagged. Measured on four
+  // test images; Threshold has no such end.
+  document.querySelectorAll('.controls [data-ends]').forEach((el) => {
+    const [left, right] = el.dataset.ends.split('|'), tag = '<span class="size-tag">smaller file</span>';
+    const scale = document.createElement('div');
+    scale.className = 'scale'; scale.setAttribute('aria-hidden', 'true');
+    scale.innerHTML = `<span>${el.dataset.smaller === 'left' ? tag : ''}${left}</span><span>${right}${el.dataset.smaller === 'right' ? tag : ''}</span>`;
+    el.after(scale);
+  });
+
+  // Each setting's explanation sits behind an (i) by its name: shown while the
+  // name is hovered or the (i) has focus, and kept open by a click or tap until
+  // another click, Escape or a scroll. The palette's instructions, the Find
+  // smallest and AI notes and the key's Forget link stay on show.
+  const tipPop = document.createElement('p');
+  tipPop.className = 'tip-pop'; tipPop.setAttribute('role', 'tooltip'); tipPop.hidden = true;
+  document.body.appendChild(tipPop);
+  let tipBtn = null, tipPinned = false;
+  function showTip(btn, pin) {
+    if (tipBtn && tipBtn !== btn) tipBtn.setAttribute('aria-expanded', 'false');
+    tipBtn = btn; tipPinned = pin;
+    tipPop.innerHTML = $(btn.getAttribute('aria-describedby')).innerHTML;
+    tipPop.hidden = false; btn.setAttribute('aria-expanded', 'true');
+    // Beside the settings column when there's room, else under the name.
+    const a = btn.closest('.tip-head').getBoundingClientRect(), side = document.querySelector('.controls').getBoundingClientRect();
+    const w = Math.min(340, innerWidth - 32), beside = side.right + 12 + w <= innerWidth - 16;
+    tipPop.style.width = `${w}px`;
+    tipPop.style.left = `${beside ? side.right + 12 : Math.max(16, Math.min(a.left, innerWidth - 16 - w))}px`;
+    const h = tipPop.offsetHeight;
+    let top = beside ? a.top - 8 : a.bottom + 6;
+    if (top + h > innerHeight - 12) top = beside ? innerHeight - 12 - h : a.top - 6 - h;
+    tipPop.style.top = `${Math.max(12, top)}px`;
+  }
+  function hideTip() {
+    if (tipBtn) tipBtn.setAttribute('aria-expanded', 'false');
+    tipBtn = null; tipPinned = false; tipPop.hidden = true;
+  }
+  document.querySelectorAll('.controls .field > p.hint:not(.keep), #fieldBox > p.hint').forEach((hint, i) => {
+    // The name it belongs to: the nearest heading or checkbox above it.
+    let head = hint.previousElementSibling;
+    while (head && !head.matches('.field-head, label')) head = head.previousElementSibling;
+    if (!head) return;
+    hint.id = hint.id || `tip${i}`; hint.classList.add('tip');
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'info'; btn.textContent = 'i';
+    btn.setAttribute('aria-describedby', hint.id); btn.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-label', `About ${(head.matches('label') ? head : head.firstElementChild).textContent.trim()}`);
+    // Beside the name, not inside a label (a click there would tick its box).
+    const name = head.matches('label') ? head : head.firstElementChild, wrap = document.createElement(head.matches('label') ? 'div' : 'span');
+    wrap.className = 'tip-head'; name.before(wrap); wrap.append(name, btn);
+    wrap.addEventListener('mouseenter', () => { if (!tipPinned) showTip(btn, false); });
+    wrap.addEventListener('mouseleave', () => { if (!tipPinned && tipBtn === btn) hideTip(); });
+    btn.addEventListener('focus', () => { if (!tipPinned) showTip(btn, false); });
+    btn.addEventListener('blur', () => { if (!tipPinned && tipBtn === btn) hideTip(); });
+    btn.addEventListener('click', (e) => { e.stopPropagation(); if (tipPinned && tipBtn === btn) hideTip(); else showTip(btn, true); });
+  });
+  document.addEventListener('click', (e) => { if (tipPinned && !tipPop.contains(e.target)) hideTip(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tipBtn) { const b = tipBtn; hideTip(); b.focus(); } });
+  addEventListener('scroll', () => { if (tipBtn) hideTip(); }, { passive: true });
+  addEventListener('resize', () => { if (tipBtn) hideTip(); });
 
   // ---------- start with the sample ----------
   syncControls();
