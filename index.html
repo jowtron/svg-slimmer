@@ -1182,6 +1182,7 @@
   const AI_RULES = `- Use viewBox="0 0 {w} {h}" and match positions, sizes and angles exactly: measure them from the image.
 - Use simple geometry: rect with rx, circle, ellipse, polygon, and paths of straight lines and arcs. Use a transform to rotate a group rather than working out rotated coordinates by hand.
 - Use linearGradient and radialGradient for smooth colour, and feGaussianBlur for soft glows and shadows, wherever the image has them. Give filters a region large enough that a blur isn't cut off.
+- Keep edges crisp: never blur, soften or roughen the whole drawing or its outlines to imitate a scan, and add no noise or texture filters. A blur is only for a glow or shadow the original actually has.
 - Transparent parts of the image stay transparent: no background rectangle.
 - Draw lettering as path outlines, never as <text>: fonts differ between computers.
 - Use as few shapes as reproduce the image faithfully. Leave out artefacts such as a dark fringe round the edge or JPEG noise.
@@ -1192,7 +1193,7 @@ ${AI_RULES}
 Reply with a few lines of notes on what you measured, then the complete SVG in one \`\`\`svg block.`;
   const AI_AGAIN = `The first image is a {w}x{h} px original. Below is an SVG redrawing it, and the second image is a sheet: the original on the left, that SVG rendered in the middle, and a map of the colour difference on the right (black is right; bright is wrong). Mean colour difference ΔE {de} (under 2 is very close); {bad}% of the pixels are clearly wrong (ΔE over 10).{extra}
 
-Improve the SVG. Fix the biggest differences first: positions, sizes, angles and shapes, then colours. Keep it clean and compact: simple geometry, gradients for smooth colour, blurs for glows, lettering as paths, no background rectangle where the original is transparent. Reply with brief notes, then the complete revised SVG in one \`\`\`svg block.
+Improve the SVG. Fix the biggest differences first: positions, sizes, angles and shapes, then colours. Keep it clean and compact: simple geometry, gradients for smooth colour, blurs only for real glows and never over outlines or the whole drawing, lettering as paths, no background rectangle where the original is transparent. Reply with brief notes, then the complete revised SVG in one \`\`\`svg block.
 
 \`\`\`svg
 {svg}
@@ -1241,7 +1242,7 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
 
   // The SVG from a reply, made safe to show and save: no scripts, no event
   // handlers, nothing fetched from elsewhere.
-  function cleanSvg(text, w, h) {
+  function cleanSvg(text, w, h, clear) {
     const m = text.match(/```(?:svg|xml)?\s*(<svg[\s\S]*?<\/svg>)\s*```/) || text.match(/(<svg[\s\S]*<\/svg>)/);
     if (!m) return null;
     const doc = new DOMParser().parseFromString(m[1], 'image/svg+xml');
@@ -1259,6 +1260,15 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
     }
     doc.querySelectorAll('style').forEach((s) => { s.textContent = s.textContent.replace(/@import[^;]*;?/gi, '').replace(/url\(\s*['"]?(?!#)[^)]*\)/gi, 'none'); });
     if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    // Models shown a clear background as white sometimes paint it back in,
+    // told not to or not: drop a rectangle covering the whole picture.
+    if (clear) {
+      const [, , vw, vh] = svg.getAttribute('viewBox').trim().split(/[\s,]+/).map(Number);
+      const full = (el, k, v) => { const a = el.getAttribute(k) || ''; return a === '100%' || parseFloat(a) >= v; };
+      for (const el of svg.querySelectorAll(':scope > rect, :scope > g > rect')) {
+        if (!parseFloat(el.getAttribute('x') || 0) && !parseFloat(el.getAttribute('y') || 0) && full(el, 'width', vw) && full(el, 'height', vh) && !el.getAttribute('mask') && !el.getAttribute('clip-path')) el.remove();
+      }
+    }
     svg.removeAttribute('width'); svg.removeAttribute('height');
     return new XMLSerializer().serializeToString(doc) + '\n';
   }
@@ -1397,7 +1407,7 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
       const t0 = Date.now();
       const { text, cost } = await aiAsk(model, content, ctl.signal);
       ai.tries[series] = n; ai.spent[series] = (ai.spent[series] || 0) + cost;
-      const svg = cleanSvg(text, w, h);
+      const svg = cleanSvg(text, w, h, !!bd.name);
       if (!svg) {
         // Say what it said instead: it is usually a reason.
         const said = text.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/\s+/g, ' ').trim();
