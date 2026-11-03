@@ -35,9 +35,9 @@ Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
   --gradients             Keep gradients: smooth ramps become SVG gradients and
                           soft glows and halos blurred shapes, not flat bands.
                           Not tried by --smallest
-  --upscale               Bitmap input smaller than the trace size: trace it
-                          smoothly enlarged, not at its own size. Keeps the
-                          shape of tiny images better; bigger file
+  --upscale / --own-size  Bitmap input smaller than the trace size: trace it
+                          smoothly enlarged (closer shape, bigger file), or at
+                          its own size. Default: enlarged under 300 px
   --background / --no-background   Remove the colour touching the border
   --field <how>           With --gradients: soft lighting no gradient fits becomes
                           a smooth colour field, written as blurred squares
@@ -293,7 +293,7 @@ fn main() {
             "--smallest" => smallest = true,
             "--target" => target = val().parse().unwrap_or_else(|_| fail("--target takes a number")),
             "-q" | "--quiet" => quiet = true,
-            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" | "--upscale" => set.push((a.clone(), String::new())),
+            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" | "--upscale" | "--own-size" => set.push((a.clone(), String::new())),
             "--preset" | "--grid" | "--smoothing" | "--corner" | "--protect" | "--decimals" | "--colours" | "--colors" | "--merge"
             | "--threshold" | "--specks" | "--clean" | "--field" => {
                 let v = val();
@@ -324,6 +324,8 @@ fn main() {
         src: if let Source::Bitmap(img) = &src { img.width().max(img.height()) as usize } else { 0 },
         ..Opts::default()
     };
+    // As the web app: a bitmap under 300 px loses its shape traced at its own size.
+    o.upscale = o.src > 0 && o.src < 300;
     let num = |k: &str, v: &str| -> f64 { v.parse().unwrap_or_else(|_| fail(format!("{k} takes a number"))) };
     for (k, v) in &set {
         match k.as_str() {
@@ -350,6 +352,7 @@ fn main() {
             "--tidy" => o.method = Method::Tidy,
             "--slivers" => o.slivers = true,
             "--upscale" => o.upscale = true,
+            "--own-size" => o.upscale = false,
             "--gradients" => o.gradients = true,
             "--field" => {
                 o.field = match v.as_str() {

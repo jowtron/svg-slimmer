@@ -940,6 +940,9 @@
       try { const img = state.cache.img = await loadImage(blobUrl(src.blob)); state.src = Math.max(img.naturalWidth, img.naturalHeight); }
       catch { /* raster() reports it */ }
     }
+    // Under 300 px, tracing at its own size loses the shape (a 120 px logo:
+    // 9% of pixels off, against 0.06% enlarged first), so start enlarged.
+    state.upscale = state.src > 0 && state.src < SMALL_BITMAP;
     state.method = 'redraw'; state.tidyWhy = bitmap ? 'it is a bitmap' : null;
     if (!bitmap) {
       try { const t = await core.tidy(src.text, opts()); state.tidyWhy = t.unsupported || null; }
@@ -965,6 +968,7 @@
   }
 
   // ---------- controls ----------
+  const SMALL_BITMAP = 300; // long side under which a bitmap is enlarged before tracing
   const PRESETS = {
     small: { grid: 1024, tol: 1.0, protect: 0, dec: 0 },
     balanced: { grid: 2048, tol: 0.5, protect: 6, dec: 0 },
