@@ -113,6 +113,13 @@ pub struct Opts {
     /// which the tracer takes for detail, so shapes are traced at this size.
     #[serde(default)]
     pub src: usize,
+    /// Trace a small bitmap's masks at the trace size after all, as drawn
+    /// there with smoothing, instead of at its own size. The soft edge pixels
+    /// of the enlarged image place edges between whole pixels, which keeps the
+    /// shape of tiny images (a few hundred px) far better, at the cost of a
+    /// bigger file and slight ripples along noisy (JPEG) edges.
+    #[serde(default)]
+    pub upscale: bool,
     #[serde(default)]
     pub field: Field,
     #[serde(default)]
@@ -140,6 +147,7 @@ impl Default for Opts {
             slivers: false,
             gradients: false,
             src: 0,
+            upscale: false,
             field: Field::Off,
             method: Method::Redraw,
             choices: Choices::default(),

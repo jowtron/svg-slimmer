@@ -35,6 +35,9 @@ Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
   --gradients             Keep gradients: smooth ramps become SVG gradients and
                           soft glows and halos blurred shapes, not flat bands.
                           Not tried by --smallest
+  --upscale               Bitmap input smaller than the trace size: trace it
+                          smoothly enlarged, not at its own size. Keeps the
+                          shape of tiny images better; bigger file
   --background / --no-background   Remove the colour touching the border
   --field <how>           With --gradients: soft lighting no gradient fits becomes
                           a smooth colour field, written as blurred squares
@@ -290,7 +293,7 @@ fn main() {
             "--smallest" => smallest = true,
             "--target" => target = val().parse().unwrap_or_else(|_| fail("--target takes a number")),
             "-q" | "--quiet" => quiet = true,
-            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" => set.push((a.clone(), String::new())),
+            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" | "--upscale" => set.push((a.clone(), String::new())),
             "--preset" | "--grid" | "--smoothing" | "--corner" | "--protect" | "--decimals" | "--colours" | "--colors" | "--merge"
             | "--threshold" | "--specks" | "--clean" | "--field" => {
                 let v = val();
@@ -346,6 +349,7 @@ fn main() {
             "--no-edges" => o.edges = false,
             "--tidy" => o.method = Method::Tidy,
             "--slivers" => o.slivers = true,
+            "--upscale" => o.upscale = true,
             "--gradients" => o.gradients = true,
             "--field" => {
                 o.field = match v.as_str() {

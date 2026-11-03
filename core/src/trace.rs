@@ -98,7 +98,7 @@ fn span(sub: &Sub) -> f64 {
 /// than the "protect" size take the lightly smoothed version.
 pub(crate) fn trace_layer(bits: &[u8], w: usize, h: usize, o: &Opts) -> Vec<Sub> {
     let s = w.max(h) as f64 / o.src as f64;
-    if o.src > 0 && s >= 1.5 {
+    if o.src > 0 && s >= 1.5 && !o.upscale {
         return native(bits, w, h, o, s);
     }
     let params = Params { turdsize: 2, alphamax: o.alpha, opttolerance: o.tol };
