@@ -16,6 +16,17 @@
 //! - `tidy`        {o, text}          []                     → {svg, pathsIn, pathsOut, coloursIn, coloursOut, background, palette}
 //!                                                             or {unsupported: reason}
 //!
+//! Polish (see `polish.rs`) keeps one session between requests, as an ask/tell
+//! loop with the page doing the drawing:
+//! - `polishStart` {text, w, h, long, max} [original, w x h] → {w, h}: the size to draw at
+//! - `polishAsk`   {n, wrap}              []                 → {svgs, done, ...status}
+//! - `polishTell`  {}                     [renders, w x h]   → {done, ...status}
+//! - `polishEnd`   {}                     []                 → {svg, log, ...status}, and the session goes
+//!
+//! where status is {before, score, renders, progress}: mean ΔE as drawn, the
+//! best so far, and how far along it is (0 to 1). `wrap` skips to the last
+//! pass, which puts back changes that bought nothing.
+//!
 //! Errors come back as {error}.
 
 use serde::Deserialize;
@@ -30,6 +41,7 @@ struct Header {
     op: String,
     #[serde(default)]
     bufs: Vec<usize>,
+    #[serde(default)]
     o: Opts,
     p: Option<Pal>,
     #[serde(default)]
@@ -46,6 +58,21 @@ struct Header {
     ks: Vec<usize>,
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    n: usize,
+    #[serde(default)]
+    long: usize,
+    #[serde(default)]
+    max: usize,
+    #[serde(default)]
+    wrap: bool,
+}
+
+/// The polish in progress, if any: one per page (or per worker).
+static POLISH: std::sync::Mutex<Option<crate::polish::Polish>> = std::sync::Mutex::new(None);
+
+fn polish_status(p: &crate::polish::Polish) -> Value {
+    json!({ "before": p.before(), "score": p.score(), "renders": p.renders(), "progress": p.progress(), "done": p.done() })
 }
 
 pub fn encode(head: &Value, bufs: &[&[u8]]) -> Vec<u8> {
@@ -144,6 +171,39 @@ fn run(msg: &[u8]) -> Result<Vec<u8>, String> {
             ),
             Err(reason) => encode(&json!({ "unsupported": reason }), &[]),
         },
+        "polishStart" => {
+            let data = buf(0)?;
+            let p = crate::polish::Polish::new(&head.text, data, head.w, head.h, head.long.max(16), head.max.max(1))?;
+            let (w, h) = p.size();
+            *POLISH.lock().unwrap() = Some(p);
+            encode(&json!({ "w": w, "h": h }), &[])
+        }
+        "polishAsk" | "polishTell" | "polishEnd" => {
+            let mut g = POLISH.lock().unwrap();
+            let p = g.as_mut().ok_or("No polish under way.")?;
+            match head.op.as_str() {
+                "polishAsk" => {
+                    if head.wrap {
+                        p.wrap_up();
+                    }
+                    let svgs = p.ask(head.n.max(1));
+                    let mut v = polish_status(p);
+                    v["svgs"] = json!(svgs);
+                    encode(&v, &[])
+                }
+                "polishTell" => {
+                    p.tell(&bufs);
+                    encode(&polish_status(p), &[])
+                }
+                _ => {
+                    let mut v = polish_status(p);
+                    v["svg"] = json!(p.svg());
+                    v["log"] = json!(p.log);
+                    *g = None;
+                    encode(&v, &[])
+                }
+            }
+        }
         other => return Err(format!("Unknown request {other}.")),
     })
 }

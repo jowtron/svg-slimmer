@@ -17,3 +17,5 @@ codegen-units = 1
 inherits = "release"
 opt-level = "s"
 panic = "abort"
+# The name section only helps a debugger; it was a tenth of the file.
+strip = true

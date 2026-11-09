@@ -351,6 +351,7 @@
         <div class="auto-row">
           <button class="btn primary" type="button" id="aiBtn">Redraw with AI</button>
           <button class="btn" type="button" id="aiMore" title="Asks the model to improve the AI round on show" hidden>One more round</button>
+          <button class="btn" type="button" id="aiPolish" title="Nudges the AI round on show closer to the original, on this device and free: moves and sizes its pieces, then fine-tunes colours and points, keeping its shapes. About 20 seconds." hidden>Polish</button>
         </div>
         <p class="hint" id="aiNote" hidden></p>
       </div>
@@ -772,7 +773,7 @@
     pill.className = `pill ${cls}`; pill.textContent = r.ai ? `${txt} · colour ΔE ${de.toFixed(2)}` : `${txt} · ${dp.toFixed(2)}% of pixels differ`; pill.hidden = false;
     $('footB').innerHTML = `<span><b>${fmtBytes(r.bytes)}</b></span><span>≈ <b>${r.points.toLocaleString()}</b> points</span>` +
       (r.ai
-        ? `<span>AI redraw · <b>${r.ai.name}</b> · round <b>${r.ai.round}</b> · $${r.ai.cost.toFixed(3)} so far</span>`
+        ? `<span>AI redraw · <b>${r.ai.name}</b> · round <b>${r.ai.round}</b>${r.ai.polished ? ', polished' : ''} · $${r.ai.cost.toFixed(3)} so far</span>`
         : r.tidy
         ? `<span><b>${r.tidy.pathsIn.toLocaleString()}</b> → <b>${r.tidy.pathsOut.toLocaleString()}</b> paths</span><span><b>${r.tidy.coloursIn}</b> → <b>${r.tidy.coloursOut}</b> colours</span>${r.tidy.background ? `<span>background left out</span>` : ''}<span>tidy · merge <b>${r.opts.merge}</b></span>`
         : (r.opts.mode === 'colour' ? `<span><b>${r.layers}</b> layer${r.layers === 1 ? '' : 's'}</span>` : '') +
@@ -788,12 +789,13 @@
   const versions = () => [state.trace, ...ai.rounds].filter(Boolean);
   function syncVersions() {
     const box = $('versions'), list = versions();
+    syncAi(); // Polish follows which version is on show
     box.hidden = !ai.rounds.length;
     if (box.hidden) return;
     const best = list.reduce((a, b) => (b.deMean < a.deMean ? b : a));
     const several = new Set(ai.rounds.map((r) => r.ai.series)).size > 1;
     box.innerHTML = '<span class="ver-label">Show</span>' + list.map((r, i) => {
-      const name = r.ai ? `${r.ai.name} · ${several ? `try ${r.ai.series}, ` : ''}round ${r.ai.round}` : r.tidy ? 'Tidy' : 'Trace';
+      const name = r.ai ? `${r.ai.name} · ${several ? `try ${r.ai.series}, ` : ''}round ${r.ai.round}${r.ai.polished ? ', polished' : ''}` : r.tidy ? 'Tidy' : 'Trace';
       return `<button type="button" class="ver${r === best ? ' best' : ''}" data-i="${i}" aria-pressed="${r === state.result}"${r === best ? ' title="Closest to the original"' : ''}><b>${name}</b><small>${fmtBytes(r.bytes)} · ΔE ${r.deMean.toFixed(1)}</small></button>`;
     }).join('');
   }
@@ -1255,10 +1257,14 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
     syncAi();
   }
   function syncAi() {
-    $('aiBtn').textContent = ai.busy ? 'Stop' : 'Redraw with AI';
-    $('aiBtn').disabled = !state.source && !ai.busy;
-    $('aiMore').hidden = !ai.rounds.length || !!ai.busy;
+    // While polishing, its own button is the Stop.
+    const asking = !!ai.busy && !ai.polishing;
+    $('aiBtn').textContent = asking ? 'Stop' : 'Redraw with AI';
+    $('aiBtn').disabled = (!state.source && !ai.busy) || !!ai.polishing;
+    $('aiMore').hidden = !ai.rounds.length || asking;
     $('aiModel').disabled = $('aiMore').disabled = !!ai.busy;
+    $('aiPolish').textContent = ai.polishing ? 'Stop' : 'Polish';
+    $('aiPolish').hidden = !(ai.polishing || (!ai.busy && state.result && state.result.ai));
   }
 
   // The SVG from a reply, made safe to show and save: no scripts, no event
@@ -1416,6 +1422,42 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
     return { text: (body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content) || '', cost: (body.usage && body.usage.cost) || 0 };
   }
 
+  // An AI round (or a polished one) scored and ready to show and to build on:
+  // the usual comparison, plus the sheet, heat map scores and close-ups the
+  // next round shows the model.
+  async function aiCheck(svg, o, p, up, bd, info) {
+    const { w, h } = up;
+    const cmp = await compare(svg, o, p);
+    const res = { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers: 0, ...cmp, opts: o, ai: info };
+    // Original | drawing | difference, for a later round to look at.
+    const draw = await raster({ kind: 'svg', text: svg }, Math.max(w, h), false);
+    const heat = heatMap(up, draw);
+    const s = Math.min(1, 1500 / (3 * w)), sw = Math.round(w * s), sh = Math.round(h * s);
+    const c = canvasOf(3 * sw, sh), ctx = c.getContext('2d');
+    ctx.fillStyle = bd.css; ctx.fillRect(0, 0, 2 * sw, sh);
+    ctx.drawImage(imageCanvas(up), 0, 0, sw, sh); ctx.drawImage(imageCanvas(draw), sw, 0, sw, sh);
+    const hc = canvasOf(w, h); hc.getContext('2d').putImageData(heat.img, 0, 0); ctx.drawImage(hc, 2 * sw, 0, sw, sh);
+    // The Difference view shows the heat map too: the palette's red marks
+    // would light up every gradient.
+    res.diffPng = new Uint8Array(await (await new Promise((r) => hc.toBlob(r, 'image/png'))).arrayBuffer());
+    // Only the scores are kept from the heat map: a full-size image per
+    // round would add up.
+    res.heat = { de: heat.de, bad: heat.bad, areas: heat.areas }; res.sheet = pngUrl(c);
+    // Close-ups of the two worst areas, a quarter of the picture a side,
+    // original | drawing at up to 2x: the sheet shrinks each panel to about
+    // 500 px, too small to see what's off. In testing (2026-11-09, two logos,
+    // Sol and Sonnet) they gave the best follow-up round in 3 runs of 4.
+    res.closeups = heat.boxes.slice(0, 2).map(([x0, y0, x1, y1]) => {
+      const side = Math.floor(Math.max(w, h) / 4), z = Math.max(1, Math.min(2, Math.floor(512 / side)));
+      const l = Math.min(Math.max(0, Math.floor((x0 + x1) / 2) - side / 2), w - side), t = Math.min(Math.max(0, Math.floor((y0 + y1) / 2) - side / 2), h - side);
+      const zc = canvasOf(2 * side * z + 8, side * z), zx = zc.getContext('2d');
+      zx.fillStyle = '#888'; zx.fillRect(0, 0, zc.width, zc.height); zx.imageSmoothingEnabled = false;
+      [up, draw].forEach((r, i) => { zx.fillStyle = bd.css; zx.fillRect(i * (side * z + 8), 0, side * z, side * z); zx.drawImage(imageCanvas(r), l, t, side, side, i * (side * z + 8), 0, side * z, side * z); });
+      return { box: [Math.round(l), Math.round(t), Math.round(l + side), Math.round(t + side)], url: pngUrl(zc) };
+    });
+    return res;
+  }
+
   async function aiRound(fresh) {
     if (ai.busy) { ai.busy.abort(); return; }
     if (!state.source) return;
@@ -1467,39 +1509,12 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
         throw new Error(`${name} didn't send back a readable SVG in round ${n}${said ? `. It said: “${said.length > 240 ? `${said.slice(0, 240)}…` : said}”` : ''}. ${base ? 'Try one more round' : 'Press Redraw with AI to try again'}, or pick another model.`);
       }
       status(`${name}, round ${n}: checking…`);
-      const cmp = await compare(svg, o, p);
-      const res = { svg, bytes: new Blob([svg]).size, points: countPoints(svg), layers: 0, ...cmp, opts: o, ai: { name, round: n, series, cost: ai.spent[series] } };
+      const res = await aiCheck(svg, o, p, up, bd, { name, round: n, series, cost: ai.spent[series] });
       // Compared with the round it was built on (a fresh series has none).
       const better = !base || res.deMean < base.deMean;
-      // Original | drawing | difference, for a later round to look at.
-      const draw = await raster({ kind: 'svg', text: svg }, Math.max(w, h), false);
-      const heat = heatMap(up, draw);
-      const s = Math.min(1, 1500 / (3 * w)), sw = Math.round(w * s), sh = Math.round(h * s);
-      const c = canvasOf(3 * sw, sh), ctx = c.getContext('2d');
-      ctx.fillStyle = bd.css; ctx.fillRect(0, 0, 2 * sw, sh);
-      ctx.drawImage(imageCanvas(up), 0, 0, sw, sh); ctx.drawImage(imageCanvas(draw), sw, 0, sw, sh);
-      const hc = canvasOf(w, h); hc.getContext('2d').putImageData(heat.img, 0, 0); ctx.drawImage(hc, 2 * sw, 0, sw, sh);
-      // The Difference view shows the heat map too: the palette's red marks
-      // would light up every gradient.
-      res.diffPng = new Uint8Array(await (await new Promise((r) => hc.toBlob(r, 'image/png'))).arrayBuffer());
-      // Only the scores are kept from the heat map: a full-size image per
-      // round would add up.
-      res.heat = { de: heat.de, bad: heat.bad, areas: heat.areas }; res.sheet = pngUrl(c);
-      // Close-ups of the two worst areas, a quarter of the picture a side,
-      // original | drawing at up to 2x: the sheet shrinks each panel to about
-      // 500 px, too small to see what's off. In testing (2026-11-09, two logos,
-      // Sol and Sonnet) they gave the best follow-up round in 3 runs of 4.
-      res.closeups = heat.boxes.slice(0, 2).map(([x0, y0, x1, y1]) => {
-        const side = Math.floor(Math.max(w, h) / 4), z = Math.max(1, Math.min(2, Math.floor(512 / side)));
-        const l = Math.min(Math.max(0, Math.floor((x0 + x1) / 2) - side / 2), w - side), t = Math.min(Math.max(0, Math.floor((y0 + y1) / 2) - side / 2), h - side);
-        const zc = canvasOf(2 * side * z + 8, side * z), zx = zc.getContext('2d');
-        zx.fillStyle = '#888'; zx.fillRect(0, 0, zc.width, zc.height); zx.imageSmoothingEnabled = false;
-        [up, draw].forEach((r, i) => { zx.fillStyle = bd.css; zx.fillRect(i * (side * z + 8), 0, side * z, side * z); zx.drawImage(imageCanvas(r), l, t, side, side, i * (side * z + 8), 0, side * z, side * z); });
-        return { box: [Math.round(l), Math.round(t), Math.round(l + side), Math.round(t + side)], url: pngUrl(zc) };
-      });
       if (!better) {
         const notes = text.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/\s+/g, ' ').trim();
-        (base.ai.failed = base.ai.failed || []).push({ de: heat.de, notes: notes.length > 300 ? `${notes.slice(0, 300)}…` : notes });
+        (base.ai.failed = base.ai.failed || []).push({ de: res.heat.de, notes: notes.length > 300 ? `${notes.slice(0, 300)}…` : notes });
       }
       if (state.source !== source) return; // another image was opened meanwhile
       ai.rounds.push(res);
@@ -1521,6 +1536,94 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
   }
   $('aiBtn').addEventListener('click', () => aiRound(true));
   $('aiMore').addEventListener('click', () => aiRound(false));
+
+  // ---------- polish ----------
+  // Nudges the AI round on show towards the original, here and for free (see
+  // core/src/polish.rs): the core proposes changes to the SVG's numbers and
+  // this page draws each try with the canvas, so it is judged exactly as it
+  // will be seen. SVG can only be drawn on the page's own thread, so the core
+  // runs here too, in its own instance, and the loop gives way between tries
+  // to keep the page responsive. A new round joins the list, so the two can
+  // be compared, and One more round can build on it.
+  const POLISH_SECS = 20, POLISH_SIZE = 384, POLISH_RENDERS = 12000, POLISH_BATCH = 2;
+  let polishX = null;
+  async function polishCall(head, bufs = []) {
+    if (!polishX) {
+      const bytes = Uint8Array.from(atob($('core-wasm').textContent.trim()), (c) => c.charCodeAt(0));
+      polishX = (await WebAssembly.instantiate(bytes)).instance.exports;
+    }
+    const r = slimUnpack(slimWasmCall(polishX, slimPack(head, bufs)));
+    if (r.head.error) throw new Error(r.head.error);
+    return r.head;
+  }
+  // Several tries at once: the browser reads the SVGs in parallel, then each
+  // is drawn and read back in turn. A try that can't be drawn counts as worse.
+  async function drawTries(texts, ctx, w, h) {
+    const urls = texts.map((t) => URL.createObjectURL(new Blob([t], { type: 'image/svg+xml' })));
+    try {
+      const ims = await Promise.all(urls.map(async (u) => { const im = new Image(); im.src = u; try { await im.decode(); return im; } catch { return null; } }));
+      return ims.map((im) => {
+        if (!im) return new Uint8Array(0);
+        ctx.clearRect(0, 0, w, h); ctx.drawImage(im, 0, 0, w, h);
+        return ctx.getImageData(0, 0, w, h).data;
+      });
+    } finally { urls.forEach((u) => URL.revokeObjectURL(u)); }
+  }
+  async function aiPolish() {
+    if (ai.busy) { ai.busy.abort(); return; }
+    const base = state.result && state.result.ai ? state.result : null;
+    if (!base || !state.source) return;
+    const ctl = ai.busy = new AbortController(); ai.polishing = true; syncAi();
+    const id = ++state.run, source = state.source, t0 = performance.now();
+    const label = `round ${base.ai.round}${base.ai.polished ? ' (polished)' : ''}`;
+    let started = false;
+    try {
+      const o = { ...opts(), mode: 'colour', method: 'redraw' }, p = await paletteFor(o);
+      const up = await cachedRaster(state.source, Math.min(AI_UP, state.src || AI_UP), false);
+      const { w, h } = await polishCall({ op: 'polishStart', text: base.svg, w: up.w, h: up.h, long: POLISH_SIZE, max: POLISH_RENDERS }, [up.data]);
+      started = true;
+      const ctx = Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d', { willReadFrequently: true });
+      let shown = 0, rest = performance.now(), st = null;
+      status(`Polishing ${label}…`);
+      while (!ctl.signal.aborted) {
+        const secs = (performance.now() - t0) / 1000;
+        if (secs > POLISH_SECS) break;
+        // The last part of the time goes on putting back changes that bought nothing.
+        const a = await polishCall({ op: 'polishAsk', n: POLISH_BATCH, wrap: secs > POLISH_SECS * 0.85 });
+        if (!a.svgs.length) break;
+        st = await polishCall({ op: 'polishTell' }, await drawTries(a.svgs, ctx, w, h));
+        if (performance.now() - shown > 300) {
+          shown = performance.now();
+          status(`Polishing ${label}: ${Math.round(100 * st.progress)}%, ${Math.round(secs)} s. Stop keeps what it has so far.`);
+        }
+        // Give way to the page now and then (image decoding mostly does already).
+        if (performance.now() - rest > 50) { await new Promise((r) => setTimeout(r, 0)); rest = performance.now(); }
+      }
+      const end = await polishCall({ op: 'polishEnd' }); started = false;
+      console.debug(`polish: ΔE ${end.before.toFixed(3)} → ${end.score.toFixed(3)} at ${w}x${h}, ${end.renders} renders in ${((performance.now() - t0) / 1000).toFixed(1)} s\n${end.log.join('\n')}`);
+      if (state.source !== source) return; // another image was opened meanwhile
+      const secs = Math.round((performance.now() - t0) / 1000);
+      if (!(end.score < end.before - 0.005)) {
+        if (id === state.run) status(`Polishing ${label} found nothing closer.`);
+        return;
+      }
+      status(`Polishing ${label}: checking…`);
+      const bd = aiBackdrop(up);
+      const res = await aiCheck(end.svg, o, p, up, bd, { ...base.ai, polished: true, failed: [] });
+      ai.rounds.push(res);
+      syncVersions();
+      if (id === state.run) {
+        state.result = res; showResult();
+        status(`Polished ${label}: ΔE ${base.deMean.toFixed(2)} → ${res.deMean.toFixed(2)} in ${secs} s, free${ctl.signal.aborted ? ' (stopped early)' : ''}. Both are in the list above the pictures.`);
+      }
+    } catch (e) {
+      status(e.message || String(e));
+    } finally {
+      if (started) { try { await polishCall({ op: 'polishEnd' }); } catch { /* already gone */ } }
+      ai.busy = null; ai.polishing = false; syncAi();
+    }
+  }
+  $('aiPolish').addEventListener('click', aiPolish);
   syncAi();
 
   // ---------- slider ends and help pop-ups ----------

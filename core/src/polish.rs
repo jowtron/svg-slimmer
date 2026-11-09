@@ -54,11 +54,53 @@ fn scale_of(m: &Aff) -> f64 {
     (m[0] * m[3] - m[1] * m[2]).abs().sqrt().max(1e-9)
 }
 
+/// An SVG transform list as one matrix (identity where it can't be read).
 fn parse_transform(s: &str) -> Aff {
-    match s.parse::<svgtypes::Transform>() {
-        Ok(t) => [t.a, t.b, t.c, t.d, t.e, t.f],
-        Err(_) => ID,
+    let b = s.as_bytes();
+    let mut m = ID;
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let ns = i;
+        while i < b.len() && b[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let name = &s[ns..i];
+        let Some(open) = s[i..].find('(').map(|k| i + k) else { return ID };
+        let Some(close) = s[open..].find(')').map(|k| open + k) else { return ID };
+        let mut v = Vec::new();
+        let mut j = open + 1;
+        while j < close {
+            match num_at(b, j) {
+                Some((e, x)) if e <= close => {
+                    v.push(x);
+                    j = e;
+                }
+                _ => j += 1,
+            }
+        }
+        i = close + 1;
+        let g = |k: usize, d: f64| v.get(k).copied().unwrap_or(d);
+        let t: Aff = match name {
+            "matrix" if v.len() == 6 => [v[0], v[1], v[2], v[3], v[4], v[5]],
+            "translate" => [1.0, 0.0, 0.0, 1.0, g(0, 0.0), g(1, 0.0)],
+            "scale" => [g(0, 1.0), 0.0, 0.0, g(1, g(0, 1.0)), 0.0, 0.0],
+            "rotate" => {
+                let (si, co) = g(0, 0.0).to_radians().sin_cos();
+                let (cx, cy) = (g(1, 0.0), g(2, 0.0));
+                let r = [co, si, -si, co, 0.0, 0.0];
+                mul(&mul(&[1.0, 0.0, 0.0, 1.0, cx, cy], &r), &[1.0, 0.0, 0.0, 1.0, -cx, -cy])
+            }
+            "skewX" => [1.0, 0.0, g(0, 0.0).to_radians().tan(), 1.0, 0.0, 0.0],
+            "skewY" => [1.0, g(0, 0.0).to_radians().tan(), 0.0, 1.0, 0.0, 0.0],
+            _ => return ID,
+        };
+        m = mul(&m, &t);
     }
+    m
 }
 
 /// A box as (x0, y0, x1, y1).
