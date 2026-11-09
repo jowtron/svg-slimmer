@@ -120,16 +120,40 @@ pub(crate) fn trace_layer(bits: &[u8], w: usize, h: usize, o: &Opts) -> Vec<Sub>
 /// back up. Each small pixel is set when most of the grid pixels in it are.
 fn native(bits: &[u8], w: usize, h: usize, o: &Opts, s: f64) -> Vec<Sub> {
     let (sw, sh) = ((w as f64 / s).ceil() as usize, (h as f64 / s).ceil() as usize);
-    let (mut on, mut all) = (vec![0u32; sw * sh], vec![0u32; sw * sh]);
+    // Area-weighted: a grid pixel straddling two small pixels counts towards
+    // both by how much of it falls in each. Binning whole grid pixels by their
+    // index gave cells of uneven size when s isn't whole (at s 1.7 some held
+    // one grid pixel and some two), which put a ripple of 1 px notches along
+    // every diagonal and curve.
+    let spans = |n: usize, m: usize| -> Vec<[(usize, f32); 2]> {
+        (0..n)
+            .map(|i| {
+                let (a, b) = (i as f64 / s, (i + 1) as f64 / s);
+                let k = (a as usize).min(m - 1);
+                let edge = (k + 1) as f64;
+                if b <= edge || k + 1 >= m { [(k, 1.0), (k, 0.0)] } else { [(k, ((edge - a) * s) as f32), (k + 1, ((b - edge) * s) as f32)] }
+            })
+            .collect()
+    };
+    let (xs, ys) = (spans(w, sw), spans(h, sh));
+    let (mut on, mut all) = (vec![0f32; sw * sh], vec![0f32; sw * sh]);
     for y in 0..h {
-        let row = ((y as f64 / s) as usize).min(sh - 1) * sw;
-        for x in 0..w {
-            let k = row + ((x as f64 / s) as usize).min(sw - 1);
-            all[k] += 1;
-            on[k] += bits[y * w + x] as u32;
+        for &(ky, wy) in &ys[y] {
+            if wy == 0.0 {
+                continue;
+            }
+            let row = ky * sw;
+            for x in 0..w {
+                let b = bits[y * w + x] as f32;
+                for &(kx, wx) in &xs[x] {
+                    let a = wx * wy;
+                    all[row + kx] += a;
+                    on[row + kx] += a * b;
+                }
+            }
         }
     }
-    let small: Vec<u8> = on.iter().zip(&all).map(|(&n, &a)| (a > 0 && n * 2 >= a) as u8).collect();
+    let small: Vec<u8> = on.iter().zip(&all).map(|(&n, &a)| (a > 0.0 && n * 2.0 >= a) as u8).collect();
     // Smoothing is a distance: keep it the same on the grid.
     trace_layer(&small, sw, sh, &Opts { src: 0, tol: o.tol / s, ..o.clone() })
         .into_iter()
