@@ -1209,7 +1209,7 @@
 
 ${AI_RULES}
 Reply with a few lines of notes on what you measured, then the complete SVG in one \`\`\`svg block.`;
-  const AI_AGAIN = `The first image is a {w}x{h} px original. Below is an SVG redrawing it, and the second image is a sheet: the original on the left, that SVG rendered in the middle, and a map of the colour difference on the right (black is right; bright is wrong). Mean colour difference ΔE {de} (under 2 is very close); {bad}% of the pixels are clearly wrong (ΔE over 10).{extra}
+  const AI_AGAIN = `The first image is a {w}x{h} px original. Below is an SVG redrawing it, and the second image is a sheet: the original on the left, that SVG rendered in the middle, and a map of the colour difference on the right (black is right; bright is wrong). Mean colour difference ΔE {de} (under 2 is very close); {bad}% of the pixels are clearly wrong (ΔE over 10).{extra}{where}{failed}
 
 Improve the SVG. Fix the biggest differences first: positions, sizes, angles and shapes, then colours. Keep it clean and compact: simple geometry, gradients for smooth colour, blurs only for real glows and never over outlines or the whole drawing, lettering as paths, no background rectangle where the original is transparent. Reply with brief notes, then the complete revised SVG in one \`\`\`svg block.
 
@@ -1301,7 +1301,10 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
 
   // ΔE per pixel between two same-size rasters, over white and over black,
   // whichever is worse, as a heat map (black is right, bright is wrong), with
-  // the mean and the share over 10 where either is drawn.
+  // the mean and the share over 10 where either is drawn, and the worst areas:
+  // an 8 x 8 grid of cells by mean ΔE, with each side's average colour there,
+  // so the next round knows where to look and what's wrong, in numbers.
+  const AREA_N = 8;
   function heatMap(a, b) {
     const n = a.w * a.h, lin = new Float32Array(256);
     for (let i = 0; i < 256; i++) { const v = i / 255; lin[i] = v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }
@@ -1313,6 +1316,7 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
     };
     const out = new ImageData(a.w, a.h);
     let sum = 0, bad = 0, m = 0;
+    const cw = a.w / AREA_N, ch = a.h / AREA_N, cells = Array.from({ length: AREA_N * AREA_N }, () => ({ de: 0, n: 0, a: new Map(), b: new Map() }));
     for (let p = 0; p < n; p++) {
       const i = 4 * p;
       let de = 0;
@@ -1320,11 +1324,31 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
         const u = lab(a.data, i, g), v = lab(b.data, i, g);
         de = Math.max(de, Math.hypot(u[0] - v[0], u[1] - v[1], u[2] - v[2]));
       }
-      if (a.data[i + 3] || b.data[i + 3]) { m++; sum += de; if (de > 10) bad++; }
+      if (a.data[i + 3] || b.data[i + 3]) {
+        m++; sum += de; if (de > 10) bad++;
+        const c = cells[Math.min(AREA_N - 1, Math.floor((p / a.w) / ch)) * AREA_N + Math.min(AREA_N - 1, Math.floor((p % a.w) / cw))];
+        c.de += de; c.n++;
+        // Colours binned at 4 bits a channel (-1 is transparent), each bin
+        // keeping its pixels' sum, so a cell half black and half yellow reads
+        // as both rather than as the olive average of the two.
+        for (const [d, hist] of [[a.data, c.a], [b.data, c.b]]) {
+          const key = d[i + 3] < 128 ? -1 : ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+          let e = hist.get(key);
+          if (!e) hist.set(key, e = [0, 0, 0, 0]);
+          e[0] += d[i]; e[1] += d[i + 1]; e[2] += d[i + 2]; e[3]++;
+        }
+      }
       const h = Math.min(1, de / 30) * 255;
       out.data[i] = h; out.data[i + 1] = h / 2; out.data[i + 2] = h / 4; out.data[i + 3] = 255;
     }
-    return { img: out, de: m ? sum / m : 0, bad: m ? 100 * bad / m : 0 };
+    const colour = (hist, k) => [...hist].sort((x, y) => y[1][3] - x[1][3]).filter(([, e], j) => j === 0 || e[3] >= 0.15 * k).slice(0, 3)
+      .map(([key, e]) => `${key < 0 ? 'transparent' : toHex(e.slice(0, 3).map((v) => Math.round(v / e[3])))} ${Math.round(100 * e[3] / k)}%`).join(', ');
+    const areas = cells.map((c, k) => ({ k, c, de: c.n ? c.de / c.n : 0 })).filter((x) => x.c.n >= 0.05 * cw * ch && x.de > 5)
+      .sort((x, y) => y.de - x.de).slice(0, 5).map(({ k, c, de }) => {
+        const x0 = Math.round((k % AREA_N) * cw), y0 = Math.round(Math.floor(k / AREA_N) * ch);
+        return `- x ${x0}–${Math.round(x0 + cw)}, y ${y0}–${Math.round(y0 + ch)}: ΔE ${de.toFixed(0)}; the original there is ${colour(c.a, c.n)}; your drawing ${colour(c.b, c.n)}`;
+      });
+    return { img: out, de: m ? sum / m : 0, bad: m ? 100 * bad / m : 0, areas };
   }
 
   // A quick small trace (1024 grid, heavy smoothing, at most 8 colours) in the
@@ -1418,7 +1442,11 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
         const b = base;
         const extra = (bd.name ? ` Where the original is transparent, the pictures show plain ${bd.name}.` : '') +
           (/<text[\s>]/.test(b.svg) ? ' It uses <text>, which renders in whatever font each computer has: draw the lettering as paths.' : '');
-        content = [{ type: 'text', text: fill(AI_AGAIN, { w, h, de: b.heat.de.toFixed(2), bad: b.heat.bad.toFixed(1), extra, svg: b.svg.trim() }) }, orig, { type: 'image_url', image_url: { url: b.sheet } }];
+        const where = b.heat.areas && b.heat.areas.length ? `\n\nWhere it's most wrong (areas in image pixels, worst first):\n${b.heat.areas.join('\n')}` : '';
+        // Rounds stand alone, so say what was already tried from this SVG and
+        // made it worse, or the model tends to try the same fix again.
+        const failed = (b.ai.failed || []).length ? `\n\nEarlier attempts to improve this SVG came out worse, so try something different:\n${b.ai.failed.map((f) => `- ΔE ${f.de.toFixed(2)}${f.notes ? `. Its notes: “${f.notes}”` : ''}`).join('\n')}` : '';
+        content = [{ type: 'text', text: fill(AI_AGAIN, { w, h, de: b.heat.de.toFixed(2), bad: b.heat.bad.toFixed(1), extra, where, failed, svg: b.svg.trim() }) }, orig, { type: 'image_url', image_url: { url: b.sheet } }];
       }
       const n = (ai.tries[series] || 0) + 1;
       status(`${name}, round ${n}: drawing… (often a minute or two)`);
@@ -1449,7 +1477,11 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
       res.diffPng = new Uint8Array(await (await new Promise((r) => hc.toBlob(r, 'image/png'))).arrayBuffer());
       // Only the scores are kept from the heat map: a full-size image per
       // round would add up.
-      res.heat = { de: heat.de, bad: heat.bad }; res.sheet = pngUrl(c);
+      res.heat = { de: heat.de, bad: heat.bad, areas: heat.areas }; res.sheet = pngUrl(c);
+      if (!better) {
+        const notes = text.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/\s+/g, ' ').trim();
+        (base.ai.failed = base.ai.failed || []).push({ de: heat.de, notes: notes.length > 300 ? `${notes.slice(0, 300)}…` : notes });
+      }
       if (state.source !== source) return; // another image was opened meanwhile
       ai.rounds.push(res);
       syncVersions();
