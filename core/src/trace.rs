@@ -12,6 +12,22 @@ pub(crate) enum Cmd {
     M([f64; 2]),
     C([f64; 6]),
     L([f64; 4]),
+    /// A circular arc, only from [`crate::snap`]: radius, large-arc and sweep
+    /// flags (0 or 1), end point, and the arc's true midpoint, which the
+    /// writer uses to choose how many decimals the radius needs.
+    A([f64; 7]),
+}
+
+impl Cmd {
+    /// Every coordinate scaled by `s`.
+    fn scaled(self, s: f64) -> Cmd {
+        match self {
+            Cmd::M(p) => Cmd::M(p.map(|v| v * s)),
+            Cmd::C(p) => Cmd::C(p.map(|v| v * s)),
+            Cmd::L(p) => Cmd::L(p.map(|v| v * s)),
+            Cmd::A(p) => Cmd::A([p[0] * s, p[1], p[2], p[3] * s, p[4] * s, p[5] * s, p[6] * s]),
+        }
+    }
 }
 
 /// One closed path of a layer.
@@ -85,6 +101,7 @@ fn span(sub: &Sub) -> f64 {
             Cmd::M(v) => v,
             Cmd::C(v) => v,
             Cmd::L(v) => v,
+            Cmd::A(v) => &v[3..],
         };
         for p in v.chunks_exact(2) {
             pt(p[0], p[1]);
@@ -158,13 +175,7 @@ fn native(bits: &[u8], w: usize, h: usize, o: &Opts, s: f64) -> Vec<Sub> {
     trace_layer(&small, sw, sh, &Opts { src: 0, tol: o.tol / s, ..o.clone() })
         .into_iter()
         .map(|sub| {
-            sub.into_iter()
-                .map(|c| match c {
-                    Cmd::M(p) => Cmd::M(p.map(|v| v * s)),
-                    Cmd::C(p) => Cmd::C(p.map(|v| v * s)),
-                    Cmd::L(p) => Cmd::L(p.map(|v| v * s)),
-                })
-                .collect()
+            sub.into_iter().map(|c| c.scaled(s)).collect()
         })
         .collect()
 }
@@ -188,47 +199,80 @@ pub(crate) fn coarse_d(bits: &[u8], w: usize, h: usize, o: &Opts, f: usize) -> S
     let k = f as f64;
     let subs: Vec<Sub> = trace_layer(&small, sw, sh, &Opts { protect: 0.0, src: 0, ..o.clone() })
         .into_iter()
-        .map(|sub| {
-            sub.into_iter()
-                .map(|c| match c {
-                    Cmd::M(p) => Cmd::M(p.map(|v| v * k)),
-                    Cmd::C(p) => Cmd::C(p.map(|v| v * k)),
-                    Cmd::L(p) => Cmd::L(p.map(|v| v * k)),
-                })
-                .collect()
-        })
+        .map(|sub| sub.into_iter().map(|c| c.scaled(k)).collect())
         .collect();
     compact_path(&subs, o.dec)
 }
 
 /// Write the paths as rounded relative commands.
 pub(crate) fn compact_path(subs: &[Sub], dec: u32) -> String {
+    write_path(subs, dec, false)
+}
+
+/// `v` rounded to `dec` decimals and written as briefly as JS would, without
+/// a leading zero.
+fn fmt_num(v: f64, dec: u32) -> String {
+    let f = 10f64.powi(dec as i32);
+    let v = js_round(v * f) / f;
+    let s = if v == 0.0 { "0".to_string() } else { format!("{}", v) };
+    if let Some(rest) = s.strip_prefix("0.") {
+        format!(".{}", rest)
+    } else if let Some(rest) = s.strip_prefix("-0.") {
+        format!("-.{}", rest)
+    } else {
+        s
+    }
+}
+
+/// The radius to write for an arc from `s` to `e` (both already rounded): the
+/// shortest that keeps the arc's midpoint within three quarters of the last
+/// decimal of the true one, else the closest. A nearly half-circle arc swings
+/// a long way for a small change of radius, and rounding the end points alone
+/// can push it out, so a radius just short of half the chord is tried too:
+/// SVG stretches that to fit exactly, which makes a clean half circle.
+fn arc_radius(s: [f64; 2], e: [f64; 2], a: &[f64; 7], dec: u32) -> String {
+    let (large, sw) = (a[1] != 0.0, a[2] != 0.0);
+    let err = |r: f64| crate::snap::arc_mid(s, e, r, large, sw).map_or(f64::INFINITY, |m| (m[0] - a[5]).hypot(m[1] - a[6]));
+    let limit = 0.75 * 10f64.powi(-(dec as i32));
+    let half = (e[0] - s[0]).hypot(e[1] - s[1]) / 2.0;
+    let mut best = (f64::INFINITY, String::new());
+    for p in dec..=dec + 3 {
+        let f = 10f64.powi(p as i32);
+        for r in [js_round(a[0] * f) / f, (a[0] * f).floor() / f, (half * f).floor() / f] {
+            if r <= 0.0 {
+                continue;
+            }
+            let x = err(r);
+            if x <= limit {
+                return fmt_num(r, p);
+            }
+            if x < best.0 {
+                best = (x, fmt_num(r, p));
+            }
+        }
+    }
+    best.1
+}
+
+/// Write the paths as rounded relative commands; with `hv`, level and upright
+/// lines as `h` and `v`.
+pub(crate) fn write_path(subs: &[Sub], dec: u32, hv: bool) -> String {
     let f = 10f64.powi(dec as i32);
     let r = |v: f64| js_round(v * f) / f;
-    let num = |v: f64| {
-        let v = r(v);
-        let s = if v == 0.0 { "0".to_string() } else { format!("{}", v) };
-        if let Some(rest) = s.strip_prefix("0.") {
-            format!(".{}", rest)
-        } else if let Some(rest) = s.strip_prefix("-0.") {
-            format!("-.{}", rest)
-        } else {
-            s
-        }
-    };
+    let num = |v: f64| fmt_num(v, dec);
+    let nums = |vals: &[f64]| -> Vec<String> { vals.iter().map(|&v| num(v)).collect() };
     let mut out = String::new();
     let (mut last, mut digit) = ('\0', false);
-    let mut emit = |out: &mut String, last: &mut char, cmd: char, vals: &[f64]| {
+    let mut emit = |out: &mut String, last: &mut char, cmd: char, vals: &[String]| {
         if !(cmd == *last && cmd != 'M') {
             out.push(cmd);
             digit = false;
         }
-        for &v in vals {
-            let t = num(v);
+        for t in vals {
             if digit && !t.starts_with('-') {
                 out.push(' ');
             }
-            out.push_str(&t);
+            out.push_str(t);
             digit = true;
         }
         *last = cmd;
@@ -245,7 +289,7 @@ pub(crate) fn compact_path(subs: &[Sub], dec: u32) -> String {
                     }
                     cx = r(p[0]);
                     cy = r(p[1]);
-                    emit(&mut out, &mut last, 'M', &[cx, cy]);
+                    emit(&mut out, &mut last, 'M', &nums(&[cx, cy]));
                     open = true;
                 }
                 Cmd::C(v) => {
@@ -255,7 +299,7 @@ pub(crate) fn compact_path(subs: &[Sub], dec: u32) -> String {
                         rel[k] = r(p[k] - if k % 2 == 1 { cy } else { cx });
                     }
                     if rel.iter().any(|&v| v != 0.0) {
-                        emit(&mut out, &mut last, 'c', &rel);
+                        emit(&mut out, &mut last, 'c', &nums(&rel));
                     }
                     cx = p[4];
                     cy = p[5];
@@ -264,12 +308,28 @@ pub(crate) fn compact_path(subs: &[Sub], dec: u32) -> String {
                     for k in 0..2 {
                         let (x, y) = (r(v[k * 2]), r(v[k * 2 + 1]));
                         let (dx, dy) = (r(x - cx), r(y - cy));
-                        if dx != 0.0 || dy != 0.0 {
-                            emit(&mut out, &mut last, 'l', &[dx, dy]);
+                        if hv && dy == 0.0 && dx != 0.0 {
+                            emit(&mut out, &mut last, 'h', &nums(&[dx]));
+                        } else if hv && dx == 0.0 && dy != 0.0 {
+                            emit(&mut out, &mut last, 'v', &nums(&[dy]));
+                        } else if dx != 0.0 || dy != 0.0 {
+                            emit(&mut out, &mut last, 'l', &nums(&[dx, dy]));
                         }
                         cx = x;
                         cy = y;
                     }
+                }
+                Cmd::A(a) => {
+                    let (x, y) = (r(a[3]), r(a[4]));
+                    let (dx, dy) = (r(x - cx), r(y - cy));
+                    if dx != 0.0 || dy != 0.0 {
+                        let rad = arc_radius([cx, cy], [x, y], &a, dec);
+                        let flag = |v: f64| if v != 0.0 { "1" } else { "0" }.to_string();
+                        let vals = [rad.clone(), rad, "0".into(), flag(a[1]), flag(a[2]), num(dx), num(dy)];
+                        emit(&mut out, &mut last, 'a', &vals);
+                    }
+                    cx = x;
+                    cy = y;
                 }
             }
         }
@@ -305,7 +365,14 @@ pub fn layer(idx: &[i16], w: usize, h: usize, o: &Opts, p: &Pal, k: usize) -> Op
 /// The path data of layer `k`: every pixel ranked `k` or above.
 pub(crate) fn layer_d(idx: &[i16], w: usize, h: usize, o: &Opts, rank: &[i32], k: usize) -> String {
     let bits: Vec<u8> = idx.iter().map(|&v| (v >= 0 && rank[v as usize] >= k as i32) as u8).collect();
-    compact_path(&trace_layer(&bits, w, h, o), o.dec)
+    let subs = trace_layer(&bits, w, h, o);
+    if !o.snap {
+        return compact_path(&subs, o.dec);
+    }
+    // The scale a bitmap traced at its own size was enlarged by (see `native`).
+    let s = if o.src > 0 && !o.upscale { w.max(h) as f64 / o.src as f64 } else { 1.0 };
+    let s = if s >= 1.5 { s } else { 1.0 };
+    write_path(&crate::snap::snap(subs, crate::snap::tolerance(w.max(h), s)), o.dec, true)
 }
 
 pub fn svg(w: usize, h: usize, paths: &[String]) -> String {

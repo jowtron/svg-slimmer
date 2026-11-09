@@ -16,6 +16,7 @@ pub mod index;
 pub mod palette;
 pub mod png;
 pub mod potrace;
+mod snap;
 pub mod tidy;
 pub mod trace;
 
@@ -120,6 +121,11 @@ pub struct Opts {
     /// bigger file and slight ripples along noisy (JPEG) edges.
     #[serde(default)]
     pub upscale: bool,
+    /// Snap to lines and circles: nearly straight curves become lines, level
+    /// and upright lines exactly so, and runs of curves one circle fits become
+    /// circular arcs (see `snap.rs`).
+    #[serde(default)]
+    pub snap: bool,
     #[serde(default)]
     pub field: Field,
     #[serde(default)]
@@ -148,6 +154,7 @@ impl Default for Opts {
             gradients: false,
             src: 0,
             upscale: false,
+            snap: false,
             field: Field::Off,
             method: Method::Redraw,
             choices: Choices::default(),

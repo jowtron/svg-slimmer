@@ -38,6 +38,8 @@ Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
   --upscale / --own-size  Bitmap input smaller than the trace size: trace it
                           smoothly enlarged (closer shape, bigger file), or at
                           its own size. Default: enlarged under 300 px
+  --snap                  Snap to lines and circles: nearly straight curves
+                          become exact lines, round ones circular arcs
   --background / --no-background   Remove the colour touching the border
   --field <how>           With --gradients: soft lighting no gradient fits becomes
                           a smooth colour field, written as blurred squares
@@ -293,7 +295,7 @@ fn main() {
             "--smallest" => smallest = true,
             "--target" => target = val().parse().unwrap_or_else(|_| fail("--target takes a number")),
             "-q" | "--quiet" => quiet = true,
-            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" | "--upscale" | "--own-size" => set.push((a.clone(), String::new())),
+            "--mono" | "--background" | "--no-background" | "--no-edges" | "--tidy" | "--slivers" | "--gradients" | "--upscale" | "--own-size" | "--snap" => set.push((a.clone(), String::new())),
             "--preset" | "--grid" | "--smoothing" | "--corner" | "--protect" | "--decimals" | "--colours" | "--colors" | "--merge"
             | "--threshold" | "--specks" | "--clean" | "--field" => {
                 let v = val();
@@ -353,6 +355,7 @@ fn main() {
             "--slivers" => o.slivers = true,
             "--upscale" => o.upscale = true,
             "--own-size" => o.upscale = false,
+            "--snap" => o.snap = true,
             "--gradients" => o.gradients = true,
             "--field" => {
                 o.field = match v.as_str() {
