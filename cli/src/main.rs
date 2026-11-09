@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
+mod polish;
+
 const HELP: &str = "svg-slim: re-trace a logo or icon as a compact colour SVG
 
 Usage: svg-slim <input> [options]
@@ -280,6 +282,9 @@ fn main() {
         print!("{HELP}");
         return;
     }
+    if args.iter().any(|a| a == "--polish") {
+        return polish_main(args);
+    }
     let mut input: Option<PathBuf> = None;
     let (mut out, mut diff_out, mut png_out, mut png_size) = (None, None, None, None);
     let (mut smallest, mut target, mut quiet) = (false, 0.2, false);
@@ -464,4 +469,62 @@ fn main() {
 
 fn write(path: &Path, data: &[u8]) {
     std::fs::write(path, data).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
+}
+
+/// `svg-slim <original> --polish <ai.svg> [-o out.svg] [--polish-size px] [--polish-time s] [--no-colours] [--moves-only]`
+fn polish_main(args: Vec<String>) {
+    let (mut input, mut svg, mut out, mut render) = (None, None, None, None);
+    let (mut size, mut secs, mut colours, mut moves_only, mut cap) = (384u32, 20.0f64, true, false, 0.04f64);
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().unwrap_or_else(|| fail(format!("{a} needs a value")));
+        match a.as_str() {
+            "--polish" => svg = Some(PathBuf::from(val())),
+            "-o" | "--out" => out = Some(PathBuf::from(val())),
+            "--polish-size" => size = val().parse().unwrap_or_else(|_| fail("--polish-size takes a number")),
+            "--polish-time" => secs = val().parse().unwrap_or_else(|_| fail("--polish-time takes a number")),
+            "--no-colours" => colours = false,
+            "--moves-only" => moves_only = true,
+            "--polish-cap" => cap = val().parse::<f64>().unwrap_or_else(|_| fail("--polish-cap takes a percentage")) / 100.0,
+            "--render" => render = Some(PathBuf::from(val())),
+            s if s.starts_with('-') => fail(format!("unknown option {s} with --polish")),
+            s => input = Some(PathBuf::from(s)),
+        }
+    }
+    let input = input.unwrap_or_else(|| fail("no original image"));
+    let svg = svg.unwrap();
+    let dynimg = image::open(&input).unwrap_or_else(|e| fail(format!("{}: {e}", input.display())));
+    // 16-bit PNGs: keep the high byte, as Pillow (the redraw harness) does; rounding
+    // instead shifts dark pixels by a level, which is ~0.3 ΔE on black lettering.
+    let img = if dynimg.color().bytes_per_pixel() > dynimg.color().channel_count() {
+        let w = dynimg.to_rgba16();
+        image::RgbaImage::from_raw(w.width(), w.height(), w.into_raw().into_iter().map(|v| (v >> 8) as u8).collect()).unwrap()
+    } else {
+        dynimg.into_rgba8()
+    };
+    let text = std::fs::read_to_string(&svg).unwrap_or_else(|e| fail(format!("{}: {e}", svg.display())));
+    let bytes_in = text.len();
+    let r = polish::polish(text, &img, size, secs, colours, moves_only, cap).unwrap_or_else(|e| fail(e));
+    for l in &r.log {
+        eprintln!("{l}");
+    }
+    if let Some(rp) = render {
+        let png = polish::render_png(&r.svg, img.width(), img.height()).unwrap_or_else(|| fail("render failed"));
+        std::fs::write(&rp, png).unwrap_or_else(|e| fail(format!("{}: {e}", rp.display())));
+    }
+    let out = out.unwrap_or_else(|| svg.with_extension("polished.svg"));
+    std::fs::write(&out, &r.svg).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
+    println!(
+        "{}: ΔE {:.3} -> {:.3} at {} px, {} -> {} bytes, {} slots, {} movers, {} renders, {:.1}s",
+        out.display(),
+        r.before,
+        r.after,
+        size,
+        bytes_in,
+        r.svg.len(),
+        r.slots,
+        r.movers,
+        r.evals,
+        r.secs
+    );
 }
