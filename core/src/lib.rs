@@ -15,6 +15,7 @@ pub mod gradient;
 pub mod index;
 pub mod palette;
 pub mod png;
+pub mod polish;
 pub mod potrace;
 mod snap;
 pub mod tidy;

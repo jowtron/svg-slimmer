@@ -55,6 +55,12 @@ Input is an SVG, PNG, JPEG, WebP, GIF or BMP.
   --png <file.png>        Also write the quantized image as an indexed PNG
   --png-size <px>         Long side of that PNG (default: the original's size)
   -q, --quiet             Only print errors
+
+svg-slim <original> --polish <ai.svg> [-o out.svg] nudges a hand-made (AI) SVG
+closer to the original, keeping its structure and shapes: whole pieces move
+first, then outlines within a path, colours and gradients, and path points
+last and least. --polish-time <s> (20), --polish-renders <n> (8000),
+--polish-size <px> (384), --render <file.png> (resvg, at the original's size)
 ";
 
 enum Source {
@@ -471,10 +477,10 @@ fn write(path: &Path, data: &[u8]) {
     std::fs::write(path, data).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
 }
 
-/// `svg-slim <original> --polish <ai.svg> [-o out.svg] [--polish-size px] [--polish-time s] [--no-colours] [--moves-only]`
+/// `svg-slim <original> --polish <ai.svg> [-o out.svg] [--polish-size px] [--polish-time s] [--polish-renders n] [--render file.png]`
 fn polish_main(args: Vec<String>) {
     let (mut input, mut svg, mut out, mut render) = (None, None, None, None);
-    let (mut size, mut secs, mut colours, mut moves_only, mut cap) = (384u32, 20.0f64, true, false, 0.04f64);
+    let (mut size, mut secs, mut renders) = (384usize, 20.0f64, 8000usize);
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| fail(format!("{a} needs a value")));
@@ -483,9 +489,7 @@ fn polish_main(args: Vec<String>) {
             "-o" | "--out" => out = Some(PathBuf::from(val())),
             "--polish-size" => size = val().parse().unwrap_or_else(|_| fail("--polish-size takes a number")),
             "--polish-time" => secs = val().parse().unwrap_or_else(|_| fail("--polish-time takes a number")),
-            "--no-colours" => colours = false,
-            "--moves-only" => moves_only = true,
-            "--polish-cap" => cap = val().parse::<f64>().unwrap_or_else(|_| fail("--polish-cap takes a percentage")) / 100.0,
+            "--polish-renders" => renders = val().parse().unwrap_or_else(|_| fail("--polish-renders takes a number")),
             "--render" => render = Some(PathBuf::from(val())),
             s if s.starts_with('-') => fail(format!("unknown option {s} with --polish")),
             s => input = Some(PathBuf::from(s)),
@@ -504,7 +508,7 @@ fn polish_main(args: Vec<String>) {
     };
     let text = std::fs::read_to_string(&svg).unwrap_or_else(|e| fail(format!("{}: {e}", svg.display())));
     let bytes_in = text.len();
-    let r = polish::polish(text, &img, size, secs, colours, moves_only, cap).unwrap_or_else(|e| fail(e));
+    let r = polish::polish(&text, &img, size, secs, renders).unwrap_or_else(|e| fail(e));
     for l in &r.log {
         eprintln!("{l}");
     }
@@ -514,17 +518,5 @@ fn polish_main(args: Vec<String>) {
     }
     let out = out.unwrap_or_else(|| svg.with_extension("polished.svg"));
     std::fs::write(&out, &r.svg).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
-    println!(
-        "{}: ΔE {:.3} -> {:.3} at {} px, {} -> {} bytes, {} slots, {} movers, {} renders, {:.1}s",
-        out.display(),
-        r.before,
-        r.after,
-        size,
-        bytes_in,
-        r.svg.len(),
-        r.slots,
-        r.movers,
-        r.evals,
-        r.secs
-    );
+    println!("{}: ΔE {:.3} -> {:.3} at {} px, {} -> {} bytes, {} renders, {:.1}s", out.display(), r.before, r.after, size, bytes_in, r.svg.len(), r.renders, r.secs);
 }
