@@ -1209,7 +1209,7 @@
 
 ${AI_RULES}
 Reply with a few lines of notes on what you measured, then the complete SVG in one \`\`\`svg block.`;
-  const AI_AGAIN = `The first image is a {w}x{h} px original. Below is an SVG redrawing it, and the second image is a sheet: the original on the left, that SVG rendered in the middle, and a map of the colour difference on the right (black is right; bright is wrong). Mean colour difference ΔE {de} (under 2 is very close); {bad}% of the pixels are clearly wrong (ΔE over 10).{extra}{where}{failed}
+  const AI_AGAIN = `The first image is a {w}x{h} px original. Below is an SVG redrawing it, and the second image is a sheet: the original on the left, that SVG rendered in the middle, and a map of the colour difference on the right (black is right; bright is wrong). Mean colour difference ΔE {de} (under 2 is very close); {bad}% of the pixels are clearly wrong (ΔE over 10).{extra}{where}{failed}{zoom}
 
 Improve the SVG. Fix the biggest differences first: positions, sizes, angles and shapes, then colours. Keep it clean and compact: simple geometry, gradients for smooth colour, blurs only for real glows and never over outlines or the whole drawing, lettering as paths, no background rectangle where the original is transparent. Reply with brief notes, then the complete revised SVG in one \`\`\`svg block.
 
@@ -1346,9 +1346,9 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
     const areas = cells.map((c, k) => ({ k, c, de: c.n ? c.de / c.n : 0 })).filter((x) => x.c.n >= 0.05 * cw * ch && x.de > 5)
       .sort((x, y) => y.de - x.de).slice(0, 5).map(({ k, c, de }) => {
         const x0 = Math.round((k % AREA_N) * cw), y0 = Math.round(Math.floor(k / AREA_N) * ch);
-        return `- x ${x0}–${Math.round(x0 + cw)}, y ${y0}–${Math.round(y0 + ch)}: ΔE ${de.toFixed(0)}; the original there is ${colour(c.a, c.n)}; your drawing ${colour(c.b, c.n)}`;
+        return { box: [x0, y0, Math.round(x0 + cw), Math.round(y0 + ch)], line: `- x ${x0}–${Math.round(x0 + cw)}, y ${y0}–${Math.round(y0 + ch)}: ΔE ${de.toFixed(0)}; the original there is ${colour(c.a, c.n)}; your drawing ${colour(c.b, c.n)}` };
       });
-    return { img: out, de: m ? sum / m : 0, bad: m ? 100 * bad / m : 0, areas };
+    return { img: out, de: m ? sum / m : 0, bad: m ? 100 * bad / m : 0, areas: areas.map((x) => x.line), boxes: areas.map((x) => x.box) };
   }
 
   // A quick small trace (1024 grid, heavy smoothing, at most 8 colours) in the
@@ -1446,7 +1446,11 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
         // Rounds stand alone, so say what was already tried from this SVG and
         // made it worse, or the model tends to try the same fix again.
         const failed = (b.ai.failed || []).length ? `\n\nEarlier attempts to improve this SVG came out worse, so try something different:\n${b.ai.failed.map((f) => `- ΔE ${f.de.toFixed(2)}${f.notes ? `. Its notes: “${f.notes}”` : ''}`).join('\n')}` : '';
-        content = [{ type: 'text', text: fill(AI_AGAIN, { w, h, de: b.heat.de.toFixed(2), bad: b.heat.bad.toFixed(1), extra, where, failed, svg: b.svg.trim() }) }, orig, { type: 'image_url', image_url: { url: b.sheet } }];
+        const zooms = b.closeups || [];
+        const zoom = zooms.map((z, i) => `\n\nClose-up ${i + 1} (original left, your drawing right) is the area x ${z.box[0]}–${z.box[2]}, y ${z.box[1]}–${z.box[3]}.`).join('');
+        let text = fill(AI_AGAIN, { w, h, de: b.heat.de.toFixed(2), bad: b.heat.bad.toFixed(1), extra, where, failed, zoom, svg: b.svg.trim() });
+        if (zooms.length) text = text.replace('(black is right; bright is wrong).', `(black is right; bright is wrong). After the sheet come ${zooms.length} close-up${zooms.length > 1 ? 's' : ''} of where it's most wrong.`);
+        content = [{ type: 'text', text }, orig, { type: 'image_url', image_url: { url: b.sheet } }, ...zooms.map((z) => ({ type: 'image_url', image_url: { url: z.url } }))];
       }
       const n = (ai.tries[series] || 0) + 1;
       status(`${name}, round ${n}: drawing… (often a minute or two)`);
@@ -1478,6 +1482,18 @@ Reply with a few lines of notes on what you measured, then the complete SVG in o
       // Only the scores are kept from the heat map: a full-size image per
       // round would add up.
       res.heat = { de: heat.de, bad: heat.bad, areas: heat.areas }; res.sheet = pngUrl(c);
+      // Close-ups of the two worst areas, a quarter of the picture a side,
+      // original | drawing at up to 2x: the sheet shrinks each panel to about
+      // 500 px, too small to see what's off. In testing (2026-11-09, two logos,
+      // Sol and Sonnet) they gave the best follow-up round in 3 runs of 4.
+      res.closeups = heat.boxes.slice(0, 2).map(([x0, y0, x1, y1]) => {
+        const side = Math.floor(Math.max(w, h) / 4), z = Math.max(1, Math.min(2, Math.floor(512 / side)));
+        const l = Math.min(Math.max(0, Math.floor((x0 + x1) / 2) - side / 2), w - side), t = Math.min(Math.max(0, Math.floor((y0 + y1) / 2) - side / 2), h - side);
+        const zc = canvasOf(2 * side * z + 8, side * z), zx = zc.getContext('2d');
+        zx.fillStyle = '#888'; zx.fillRect(0, 0, zc.width, zc.height); zx.imageSmoothingEnabled = false;
+        [up, draw].forEach((r, i) => { zx.fillStyle = bd.css; zx.fillRect(i * (side * z + 8), 0, side * z, side * z); zx.drawImage(imageCanvas(r), l, t, side, side, i * (side * z + 8), 0, side * z, side * z); });
+        return { box: [Math.round(l), Math.round(t), Math.round(l + side), Math.round(t + side)], url: pngUrl(zc) };
+      });
       if (!better) {
         const notes = text.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/\s+/g, ' ').trim();
         (base.ai.failed = base.ai.failed || []).push({ de: heat.de, notes: notes.length > 300 ? `${notes.slice(0, 300)}…` : notes });
